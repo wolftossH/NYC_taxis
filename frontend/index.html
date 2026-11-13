@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Taxi Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.16/dist/plot.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega@5.30.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@5.21.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@6.26.0"></script>
+</head>
+<body>
+<header class="band"><div class="wrap">
+  <div>
+    <h1>Where to wait next</h1>
+    <p class="sub" id="sub">NYC yellow-taxi history by pickup zone, for choosing where to wait or cruise</p>
+  </div>
+  <button id="themeBtn" title="Switch between light and dark">Light / dark</button>
+</div></header>
+<div class="wrap">
+
+<section class="filters card" aria-label="Shift filters">
+  <div class="grp"><span>Days</span>
+    <div class="chips" id="dayPresets"></div>
+    <div id="weekdays" class="chips"></div></div>
+  <div class="grp"><span>Time of day (pickup hour)</span>
+    <div class="chips" id="hourPresets"></div>
+    <div class="pair"><input type="number" id="h0" min="0" max="23" value="0" aria-label="From hour"> to <input type="number" id="h1" min="0" max="23" value="23" aria-label="To hour"> <span class="hint" id="hourHint">24-hour clock</span></div></div>
+  <div class="grp"><span>Dates</span>
+    <div class="pair"><input type="date" id="start" aria-label="From date"> to <input type="date" id="end" aria-label="To date"></div>
+    <div class="chips presets" id="presets"></div></div>
+  <div class="grp"><span>Zones need at least</span>
+    <div class="pair"><input type="number" id="minTrips" min="0" value="30"> trips</div></div>
+  <div class="grp"><span>Colour the map by</span><select id="metric"></select></div>
+</section>
+
+<section class="meter" id="stats" aria-label="Headline numbers"></section>
+
+<section class="main">
+  <aside class="card" aria-labelledby="pickH">
+    <h2 id="pickH">Best zones for this shift</h2>
+    <p class="note">Pareto-efficient zones: no other zone has both more pickups and a higher fare+tip rate. Ordered by attractiveness, which balances the two.</p>
+    <ol class="picks" id="picks"></ol>
+  </aside>
+  <div class="card">
+    <h2 id="mapTitle">Map</h2>
+    <p class="note" id="mapNote"></p>
+    <div id="map"></div>
+    <div id="legend"></div>
+  </div>
+</section>
+
+<section class="row">
+  <div class="card">
+    <h2>Pickups vs. earning rate</h2>
+    <p class="note">Each dot is a zone. <span class="key"><i class="dot" style="background:var(--s1)"></i>Pareto-efficient</span><span class="key"><i class="dot" style="background:var(--s1);opacity:.35"></i>other zones</span><span class="key"><i class="dot hollow"></i>under 10 pickups/day (small sample; ▲▼ beyond the axis, pinned to its edge)</span></p>
+    <div id="scatter"></div>
+    <details><summary>Table view: top zones by attractiveness</summary><div id="table"></div></details>
+  </div>
+  <div class="card" id="detail" aria-live="polite"></div>
+</section>
+
+<section class="row3">
+  <div class="card"><h2>Fare + tip per occupied minute, by hour</h2><div id="vRate"></div></div>
+  <div class="card"><h2>Avg occupied duration, by hour</h2><div id="vDur"></div></div>
+  <div class="card"><h2>Pickups per day, by weekday</h2><div id="vWeekday"></div></div>
+  <div class="card"><h2>Earning rate vs. traffic speed (indexed)</h2>
+    <p class="note" id="idxKey"></p><div id="vTraffic"></div>
+    <p class="note" id="trafficNote"></p></div>
+</section>
+
+<div id="tip" class="tip" hidden></div>
+<p id="err" class="err" role="alert" hidden></p>
+<footer>
+  <p><b>How the numbers work.</b> Pickups per day = pickups ÷ selected days. Fare+tip rate = (base fares + recorded tips) ÷ occupied minutes, so it excludes operating costs and empty driving. Card tipping = card trips with a tip over 20% of the fare ÷ card trips (cash tips are not recorded). Destination % = trips from the zone to a destination ÷ all selected trips leaving the zone. All rates are recomputed from summed totals for the selected period.</p>
+  <p><b>Limits.</b> This is history, not a live forecast. Zones with few trips are greyed out. Traffic covers one day and is chosen independently of the taxi dates.</p>
+</footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

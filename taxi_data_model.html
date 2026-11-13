@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Taxi Data Model</title>
+<style>
+  :root { --bg:#fafaf8; --fg:#1d1d1b; --mute:#6b6b66; --card:#fff; --line:#d9d8d2; --raw:#e8f0fe; --der:#fff2d6; --ext:#eee; --acc:#2a5db0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --fg:#ecebe6; --mute:#9a9a94; --card:#1f1f1e; --line:#3a3a37; --raw:#1d2b44; --der:#4a3b17; --ext:#2a2a28; --acc:#7aa7ec; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,Segoe UI,sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:26px; margin:0 0 4px; } h2 { font-size:19px; margin:36px 0 8px; }
+  p, li { color:var(--mute); } code { font-family:ui-monospace,Consolas,monospace; font-size:13px; color:var(--fg); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin:14px 0; overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  tr.raw td:first-child { border-left:4px solid #4a7fd4; } tr.der td:first-child { border-left:4px solid #e0a421; }
+  .tag { font-size:11px; padding:1px 7px; border-radius:10px; background:var(--raw); } .tag.d { background:var(--der); }
+  svg { width:100%; height:auto; } svg text { fill:var(--fg); font:12px system-ui,sans-serif; } svg .t { font-weight:700; font-size:13px; }
+  svg .m { fill:var(--mute); } svg rect.b { stroke:var(--line); stroke-width:1.5; } svg line, svg polyline { stroke:var(--acc); stroke-width:1.5; fill:none; }
+  svg .dash { stroke-dasharray:5 4; }
+</style>
+</head>
+<body>
+<main>
+<h1>NYC Taxi &amp; Traffic Data Model</h1>
+<p>Built from <code>download_and_preprocess_taxi_(KV).ipynb</code> &mdash; cleaned TLC yellow-taxi trips (Aug&ndash;Sep 2026, 6,767,274 rows), NYC DOT traffic speeds, and the features engineered in the notebook.</p>
+
+<h2>Entity diagram</h2>
+<div class="card">
+<svg viewBox="0 0 880 470" role="img" aria-label="Entity relationship diagram">
+  <!-- relationships -->
+  <line x1="220" y1="55" x2="300" y2="55"/>
+  <line x1="640" y1="55" x2="540" y2="55"/>
+  <line x1="370" y1="140" x2="320" y2="210"/>
+  <line x1="470" y1="140" x2="600" y2="210"/>
+  <polyline class="dash" points="720,240 750,240 750,90"/>
+  <polyline class="dash" points="540,400 800,400 800,90"/>
+  <text class="m" x="226" y="48">1:N</text><text class="m" x="590" y="48">1:N</text>
+  <text class="m" x="276" y="180">group by PU</text><text class="m" x="520" y="180">group by DO</text>
+  <text class="m" x="555" y="392">link &rarr; zone (not built)</text>
+
+  <rect class="b" x="20" y="20" width="200" height="70" rx="6" fill="var(--ext)"/>
+  <text class="t" x="32" y="42">payment_type (ref)</text><text class="m" x="32" y="60">payment_type PK</text><text class="m" x="32" y="76">TLC code list</text>
+
+  <rect class="b" x="300" y="20" width="240" height="120" rx="6" fill="var(--raw)"/>
+  <text class="t" x="312" y="42">taxi_trips (fact)</text>
+  <text class="m" x="312" y="62">10 raw columns</text><text class="m" x="312" y="78">PULocationID FK, DOLocationID FK</text>
+  <text class="m" x="312" y="94">payment_type FK</text><text class="m" x="312" y="114">+ 5 derived features</text>
+
+  <rect class="b" x="640" y="20" width="200" height="70" rx="6" fill="var(--ext)"/>
+  <text class="t" x="652" y="42">taxi_zone (ref)</text><text class="m" x="652" y="60">LocationID PK (1&ndash;263)</text><text class="m" x="652" y="76">not exported by notebook</text>
+
+  <rect class="b" x="170" y="210" width="270" height="60" rx="6" fill="var(--der)"/>
+  <text class="t" x="182" y="232">zone_tip_pickup</text><text class="m" x="182" y="250">PULocationID PK, good_tip_percentage</text>
+  <rect class="b" x="470" y="210" width="250" height="60" rx="6" fill="var(--der)"/>
+  <text class="t" x="482" y="232">zone_tip_dropoff</text><text class="m" x="482" y="250">DOLocationID PK, good_tip_percentage</text>
+
+  <rect class="b" x="300" y="360" width="240" height="90" rx="6" fill="var(--raw)"/>
+  <text class="t" x="312" y="382">traffic_observations</text><text class="m" x="312" y="402">link_id, data_as_of (obs. key)</text>
+  <text class="m" x="312" y="418">speed, travel_time</text><text class="m" x="312" y="434">borough, link_name, link_points</text>
+</svg>
+<p style="margin:6px 0 0;font-size:13px">Solid = relationship supported by the data. Dashed = would need a spatial join; the notebook keeps traffic separate and does no traffic-to-zone mapping. <span class="tag">raw</span> blue, <span class="tag d">derived</span> amber, grey = external reference.</p>
+</div>
+
+<h2>taxi_trips</h2>
+<p>One row per valid trip. Grain: a single yellow-taxi trip. Raw columns from <code>taxi_trips.parquet</code>; derived columns added in notebook cells 19&ndash;21.</p>
+<div class="card"><table>
+<tr><th>Column</th><th>Type</th><th>Origin</th><th>Definition / notes</th></tr>
+<tr class="raw"><td><code>tpep_pickup_datetime</code></td><td>datetime64</td><td><span class="tag">raw</span></td><td>Pickup time; always within the file's month</td></tr>
+<tr class="raw"><td><code>tpep_dropoff_datetime</code></td><td>datetime64</td><td><span class="tag">raw</span></td><td>Dropoff time</td></tr>
+<tr class="raw"><td><code>PULocationID</code></td><td>int64</td><td><span class="tag">raw</span></td><td>FK &rarr; taxi_zone.LocationID (1&ndash;263)</td></tr>
+<tr class="raw"><td><code>DOLocationID</code></td><td>int64</td><td><span class="tag">raw</span></td><td>FK &rarr; taxi_zone.LocationID (1&ndash;263)</td></tr>
+<tr class="raw"><td><code>trip_distance</code></td><td>float64</td><td><span class="tag">raw</span></td><td>Miles, &gt;0 and &le;100</td></tr>
+<tr class="raw"><td><code>fare_amount</code></td><td>float64</td><td><span class="tag">raw</span></td><td>Metered fare, &ge;0</td></tr>
+<tr class="raw"><td><code>tip_amount</code></td><td>float64</td><td><span class="tag">raw</span></td><td>Card tips only; cash tips are unobserved</td></tr>
+<tr class="raw"><td><code>tolls_amount</code></td><td>float64</td><td><span class="tag">raw</span></td><td>&ge;0</td></tr>
+<tr class="raw"><td><code>total_amount</code></td><td>float64</td><td><span class="tag">raw</span></td><td>Total charged to passenger</td></tr>
+<tr class="raw"><td><code>payment_type</code></td><td>int64</td><td><span class="tag">raw</span></td><td>TLC code (e.g. 1 = credit card, 2 = cash); null if malformed</td></tr>
+<tr class="der"><td><code>duration</code></td><td>timedelta64</td><td><span class="tag d">derived</span></td><td><code>dropoff &minus; pickup</code></td></tr>
+<tr class="der"><td><code>duration_minutes</code></td><td>float64</td><td><span class="tag d">derived</span></td><td><code>duration.total_seconds() / 60</code> (1&ndash;240 after cleaning)</td></tr>
+<tr class="der"><td><code>profitability_index</code></td><td>float64</td><td><span class="tag d">derived</span></td><td><code>(fare + tip &minus; tolls) / duration_minutes</code> &mdash; driver earnings per minute</td></tr>
+<tr class="der"><td><code>tip_percent</code></td><td>float64</td><td><span class="tag d">derived</span></td><td><code>tip_amount / fare_amount</code>. Inf/NaN if fare is 0</td></tr>
+<tr class="der"><td><code>good_tip</code></td><td>int64 (0/1)</td><td><span class="tag d">derived</span></td><td><code>1 if tip_percent &gt; 0.20 else 0</code></td></tr>
+</table></div>
+
+<h2>Zone-level aggregates</h2>
+<p>Both are derived from <code>taxi_trips</code> by averaging <code>good_tip</code> per zone (tip propensity, as a percentage).</p>
+<div class="card"><table>
+<tr><th>Table</th><th>Key</th><th>Measure</th><th>Definition</th></tr>
+<tr class="der"><td><code>zone_tip_pickup</code> (<code>tip_PU_zone</code>)</td><td><code>PULocationID</code> int64</td><td><code>good_tip_percentage</code> float64</td><td><code>mean(good_tip) &times; 100</code> grouped by pickup zone</td></tr>
+<tr class="der"><td><code>zone_tip_dropoff</code> (<code>tip_DO_zone</code>)</td><td><code>DOLocationID</code> int64</td><td><code>good_tip_percentage</code> float64</td><td><code>mean(good_tip) &times; 100</code> grouped by dropoff zone</td></tr>
+</table></div>
+
+<h2>traffic_observations</h2>
+<p>One row per link per DOT reading (<code>traffic_observations.parquet</code>). Source: NYC DOT real-time traffic speeds, selected historical day(s). No features have been derived yet.</p>
+<div class="card"><table>
+<tr><th>Column</th><th>Type</th><th>Notes</th></tr>
+<tr class="raw"><td><code>link_id</code></td><td>string</td><td>Road-segment identifier; with <code>data_as_of</code> identifies a reading</td></tr>
+<tr class="raw"><td><code>speed</code></td><td>float64</td><td>Source units (mph); may be null</td></tr>
+<tr class="raw"><td><code>travel_time</code></td><td>float64</td><td>Segment travel time (seconds); may be null</td></tr>
+<tr class="raw"><td><code>data_as_of</code></td><td>datetime64</td><td>Observation timestamp</td></tr>
+<tr class="raw"><td><code>borough</code></td><td>string</td><td>Borough of the segment</td></tr>
+<tr class="raw"><td><code>link_name</code></td><td>string</td><td>Segment description</td></tr>
+<tr class="raw"><td><code>link_points</code></td><td>string</td><td>Space-separated <code>lat,lon</code> polyline</td></tr>
+</table></div>
+
+<h2>Reference tables (not in the notebook output)</h2>
+<ul>
+  <li><strong>taxi_zone</strong>: TLC zone lookup (<code>LocationID</code>, <code>zone</code>, <code>borough</code>, geometry). Needed to label zones and to join traffic links to zones.</li>
+  <li><strong>payment_type</strong>: TLC code list (0 flex fare, 1 credit card, 2 cash, 3 no charge, 4 dispute, 5 unknown, 6 voided). Tip features are only meaningful for card trips.</li>
+</ul>
+
+<h2>Caveats</h2>
+<ul>
+  <li><code>good_tip</code> counts cash trips (tip = 0) as bad tips, which pulls down zone percentages. Filter to <code>payment_type == 1</code> for a fair propensity.</li>
+  <li><code>tip_percent</code> is Inf/NaN when <code>fare_amount</code> is 0; <code>good_tip</code> treats these as 0.</li>
+  <li>Small-volume zones give extreme percentages (e.g. zone 199 at 83%, others at 0%); consider a minimum trip count.</li>
+  <li>Traffic and taxi dates are selected independently, so a join on time needs overlapping dates.</li>
+</ul>
+</main>
+</body>
+</html>

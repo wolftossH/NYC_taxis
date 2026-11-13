@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn>=0.29
+pandas>=2.0,<4
+numpy>=1.24,<3
+pyarrow>=12,<24
+requests>=2.31,<3
+nbformat
+nbconvert
+ipykernel

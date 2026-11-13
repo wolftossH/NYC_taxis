@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Taxi Database Design</title>
+<style>
+  :root { --bg:#fafaf8; --fg:#1d1d1b; --mute:#6b6b66; --card:#fff; --line:#d9d8d2; --fact:#e8f0fe; --dim:#eee; --der:#fff2d6; --acc:#2a5db0; --code:#f3f2ee; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --fg:#ecebe6; --mute:#9a9a94; --card:#1f1f1e; --line:#3a3a37; --fact:#1d2b44; --dim:#2a2a28; --der:#4a3b17; --acc:#7aa7ec; --code:#262624; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,Segoe UI,sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:26px; margin:0 0 4px; } h2 { font-size:19px; margin:36px 0 8px; }
+  p, li { color:var(--mute); } code { font-family:ui-monospace,Consolas,monospace; font-size:13px; color:var(--fg); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin:14px 0; overflow-x:auto; }
+  pre { margin:0; background:var(--code); padding:12px 14px; border-radius:6px; overflow-x:auto; font:12.5px/1.5 ui-monospace,Consolas,monospace; color:var(--fg); }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  svg { width:100%; height:auto; } svg text { fill:var(--fg); font:12px ui-monospace,Consolas,monospace; }
+  svg .t { font:700 13px system-ui,sans-serif; } svg .m { fill:var(--mute); }
+  svg rect.b { stroke:var(--line); stroke-width:1.5; } svg line, svg polyline { stroke:var(--acc); stroke-width:1.5; fill:none; }
+  svg .dash { stroke-dasharray:5 4; }
+</style>
+</head>
+<body>
+<main>
+<h1>NYC Taxi &amp; Traffic Database Design</h1>
+<p>A PostgreSQL design (physical schema) for loading the two Parquet outputs of <code>download_and_preprocess_taxi_(KV).ipynb</code> and serving the engineered features. It is a proposal, not something run against a database.</p>
+
+<h2>Schema overview</h2>
+<div class="card">
+<svg viewBox="0 0 880 440" role="img" aria-label="Database schema diagram">
+  <line x1="220" y1="60" x2="310" y2="60"/>
+  <line x1="660" y1="60" x2="570" y2="60"/>
+  <line x1="660" y1="85" x2="570" y2="85"/>
+  <polyline class="dash" points="440,160 440,215"/>
+  <polyline class="dash" points="500,160 640,215"/>
+  <line x1="440" y1="330" x2="440" y2="370"/>
+  <text class="m" x="226" y="52">N:1</text><text class="m" x="596" y="52">N:1</text><text class="m" x="596" y="102">N:1</text>
+  <text class="m" x="448" y="195">view</text><text class="m" x="580" y="195">view</text><text class="m" x="448" y="355">N:1</text>
+
+  <rect class="b" x="20" y="20" width="200" height="80" rx="6" fill="var(--dim)"/>
+  <text class="t" x="32" y="42">payment_type_dim</text><text class="m" x="32" y="62">PK payment_type_id</text><text class="m" x="32" y="78">description</text>
+
+  <rect class="b" x="310" y="20" width="260" height="140" rx="6" fill="var(--fact)"/>
+  <text class="t" x="322" y="42">taxi_trip (partitioned)</text>
+  <text class="m" x="322" y="62">PK (trip_id, pickup_ts)</text>
+  <text class="m" x="322" y="78">FK pu_location_id, do_location_id</text>
+  <text class="m" x="322" y="94">FK payment_type_id</text>
+  <text class="m" x="322" y="110">dropoff_ts, trip_distance, fare, tip,</text>
+  <text class="m" x="322" y="126">tolls, total</text>
+  <text class="m" x="322" y="146">generated: duration_minutes, ...</text>
+
+  <rect class="b" x="660" y="20" width="200" height="100" rx="6" fill="var(--dim)"/>
+  <text class="t" x="672" y="42">taxi_zone_dim</text><text class="m" x="672" y="62">PK location_id</text><text class="m" x="672" y="78">zone, borough</text><text class="m" x="672" y="94">service_zone</text>
+
+  <rect class="b" x="310" y="215" width="260" height="55" rx="6" fill="var(--der)"/>
+  <text class="t" x="322" y="237">zone_tip_pickup_v</text><text class="m" x="322" y="255">location_id, good_tip_percentage</text>
+  <rect class="b" x="600" y="215" width="260" height="55" rx="6" fill="var(--der)"/>
+  <text class="t" x="612" y="237">zone_tip_dropoff_v</text><text class="m" x="612" y="255">location_id, good_tip_percentage</text>
+
+  <rect class="b" x="310" y="290" width="260" height="40" rx="6" fill="var(--fact)"/>
+  <text class="t" x="322" y="315">traffic_observation</text>
+  <rect class="b" x="310" y="370" width="260" height="60" rx="6" fill="var(--dim)"/>
+  <text class="t" x="322" y="392">traffic_link_dim</text><text class="m" x="322" y="412">PK link_id, borough, link_name,</text><text class="m" x="322" y="426">link_points</text>
+</svg>
+<p style="margin:6px 0 0;font-size:13px">Blue = fact tables, grey = dimensions, amber = derived views (dashed). <code>traffic_observation</code> has composite PK (link_id, data_as_of) and FK link_id.</p>
+</div>
+
+<h2>Design decisions</h2>
+<ul>
+  <li><strong>Star-style split.</strong> Trips and traffic readings are fact tables. Zone, payment type and traffic link are dimensions. The Parquet <code>traffic_observations</code> repeats <code>borough</code>, <code>link_name</code> and <code>link_points</code> on every reading, so those move to <code>traffic_link_dim</code>.</li>
+  <li><strong>Derived features are generated columns.</strong> <code>duration_minutes</code>, <code>profitability_index</code>, <code>tip_percent</code> and <code>good_tip</code> are computed by the database, so they cannot drift from the raw columns. Division by zero yields NULL via <code>NULLIF</code>.</li>
+  <li><strong>Monthly range partitions on <code>pickup_ts</code>.</strong> The data arrives monthly (about 3.4M rows each) and queries are time-bounded. Partitioned tables need the partition key in the PK, hence <code>(trip_id, pickup_ts)</code>.</li>
+  <li><strong>Zone aggregates are views.</strong> They are cheap to recompute; switch to materialized views if the full history grows large.</li>
+  <li><strong>Money as <code>numeric(10,2)</code></strong>, not float, to avoid rounding drift in sums.</li>
+</ul>
+
+<h2>DDL</h2>
+<div class="card"><pre>-- Dimensions
+CREATE TABLE payment_type_dim (
+  payment_type_id smallint PRIMARY KEY,
+  description     text NOT NULL
+);
+INSERT INTO payment_type_dim VALUES
+  (0,'Flex fare'),(1,'Credit card'),(2,'Cash'),(3,'No charge'),
+  (4,'Dispute'),(5,'Unknown'),(6,'Voided');
+
+CREATE TABLE taxi_zone_dim (
+  location_id  smallint PRIMARY KEY CHECK (location_id BETWEEN 1 AND 263),
+  zone         text NOT NULL,
+  borough      text NOT NULL,
+  service_zone text
+);
+
+CREATE TABLE traffic_link_dim (
+  link_id     bigint PRIMARY KEY,
+  borough     text,
+  link_name   text,
+  link_points text            -- space-separated "lat,lon" polyline
+);
+
+-- Facts
+CREATE TABLE taxi_trip (
+  trip_id         bigint GENERATED ALWAYS AS IDENTITY,
+  pickup_ts       timestamp NOT NULL,
+  dropoff_ts      timestamp NOT NULL,
+  pu_location_id  smallint  NOT NULL REFERENCES taxi_zone_dim,
+  do_location_id  smallint  NOT NULL REFERENCES taxi_zone_dim,
+  trip_distance   numeric(6,2)  NOT NULL CHECK (trip_distance > 0 AND trip_distance &lt;= 100),
+  fare_amount     numeric(10,2) NOT NULL CHECK (fare_amount  &gt;= 0),
+  tip_amount      numeric(10,2) NOT NULL CHECK (tip_amount   &gt;= 0),
+  tolls_amount    numeric(10,2) NOT NULL CHECK (tolls_amount &gt;= 0),
+  total_amount    numeric(10,2) NOT NULL CHECK (total_amount &gt;= 0),
+  payment_type_id smallint REFERENCES payment_type_dim,   -- NULL if malformed
+  -- engineered features
+  duration_minutes numeric GENERATED ALWAYS AS
+    (EXTRACT(EPOCH FROM dropoff_ts - pickup_ts) / 60) STORED,
+  profitability_index numeric GENERATED ALWAYS AS
+    ((fare_amount + tip_amount - tolls_amount)
+      / NULLIF(EXTRACT(EPOCH FROM dropoff_ts - pickup_ts) / 60, 0)) STORED,
+  tip_percent numeric GENERATED ALWAYS AS
+    (tip_amount / NULLIF(fare_amount, 0)) STORED,
+  good_tip smallint GENERATED ALWAYS AS
+    (CASE WHEN tip_amount &gt; 0.2 * fare_amount THEN 1 ELSE 0 END) STORED,
+  PRIMARY KEY (trip_id, pickup_ts),
+  CHECK (dropoff_ts &gt; pickup_ts)
+) PARTITION BY RANGE (pickup_ts);
+
+CREATE TABLE taxi_trip_2026_08 PARTITION OF taxi_trip
+  FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
+CREATE TABLE taxi_trip_2026_09 PARTITION OF taxi_trip
+  FOR VALUES FROM ('2026-09-01') TO ('2026-10-01');
+
+CREATE TABLE traffic_observation (
+  link_id     bigint    NOT NULL REFERENCES traffic_link_dim,
+  data_as_of  timestamp NOT NULL,
+  speed       numeric(6,2) CHECK (speed &gt;= 0),   -- mph, may be NULL
+  travel_time numeric(8,1) CHECK (travel_time &gt;= 0), -- seconds, may be NULL
+  PRIMARY KEY (link_id, data_as_of),
+  CHECK (speed IS NOT NULL OR travel_time IS NOT NULL)
+);
+
+-- Zone-level tip propensity
+CREATE VIEW zone_tip_pickup_v AS
+  SELECT pu_location_id AS location_id, 100.0 * avg(good_tip) AS good_tip_percentage
+  FROM taxi_trip GROUP BY pu_location_id;
+
+CREATE VIEW zone_tip_dropoff_v AS
+  SELECT do_location_id AS location_id, 100.0 * avg(good_tip) AS good_tip_percentage
+  FROM taxi_trip GROUP BY do_location_id;</pre></div>
+
+<h2>Indexes</h2>
+<div class="card"><table>
+<tr><th>Index</th><th>On</th><th>Serves</th></tr>
+<tr><td><code>taxi_trip_pu_time_ix</code></td><td><code>taxi_trip (pu_location_id, pickup_ts)</code></td><td>Per-zone, per-hour earnings and tip queries</td></tr>
+<tr><td><code>taxi_trip_do_ix</code></td><td><code>taxi_trip (do_location_id)</code></td><td>Dropoff-zone tip view, FK lookups</td></tr>
+<tr><td><code>taxi_trip_card_ix</code></td><td><code>taxi_trip (pu_location_id) WHERE payment_type_id = 1</code></td><td>Card-only tip propensity (cash tips are unobserved)</td></tr>
+<tr><td><code>traffic_obs_time_brin</code></td><td><code>traffic_observation USING brin (data_as_of)</code></td><td>Time-window scans, small footprint</td></tr>
+<tr><td>Partition pruning</td><td><code>pickup_ts</code> range</td><td>Month-bounded queries read only one partition</td></tr>
+</table></div>
+<div class="card"><pre>CREATE INDEX taxi_trip_pu_time_ix ON taxi_trip (pu_location_id, pickup_ts);
+CREATE INDEX taxi_trip_do_ix      ON taxi_trip (do_location_id);
+CREATE INDEX taxi_trip_card_ix    ON taxi_trip (pu_location_id) WHERE payment_type_id = 1;
+CREATE INDEX traffic_obs_time_brin ON traffic_observation USING brin (data_as_of);</pre></div>
+
+<h2>Loading from the notebook output</h2>
+<ol>
+  <li>Load <code>taxi_zone_dim</code> from the TLC zone lookup CSV (not produced by the notebook).</li>
+  <li>Load <code>traffic_link_dim</code> from the distinct <code>(link_id, borough, link_name, link_points)</code> rows of <code>traffic_observations.parquet</code>, keeping the latest per link.</li>
+  <li><code>COPY</code> the Parquet columns (exported to CSV) into <code>taxi_trip</code> and <code>traffic_observation</code>. Generated columns fill themselves, so the notebook's cells 19&ndash;21 are no longer needed for loading.</li>
+</ol>
+
+<h2>Open points</h2>
+<ul>
+  <li>The notebook's <code>good_tip</code> is <code>tip_percent &gt; 0.2</code>; in SQL a zero fare gives <code>0 &gt; 0</code>, which is false and so 0, the same as the notebook's NaN case.</li>
+  <li><code>link_id</code> is a string in the Parquet. It is modelled as <code>bigint</code> because the sample values are numeric; use <code>text</code> if non-numeric IDs appear.</li>
+  <li>A traffic-to-zone mapping table (<code>link_id</code> &rarr; <code>location_id</code>) is not included, since the notebook does no spatial join.</li>
+</ul>
+</main>
+</body>
+</html>
