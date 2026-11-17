@@ -49,12 +49,14 @@ h2 { font-size:17px; margin:0 0 2px; font-weight:700; font-stretch:80%; letter-s
 input, select, button { font:inherit; font-size:14px; color:var(--ink); background:var(--surface); border:1px solid var(--axis);
   border-radius:4px; padding:5px 9px; }
 input[type=number] { width:64px; }
+input[type=time] { width:124px; }
 button { cursor:pointer; font-weight:500; } button:hover { background:var(--grid); }
 :focus-visible { outline:3px solid var(--s1); outline-offset:2px; }
 .chips { display:flex; gap:4px; }
 .chips button.on { background:var(--ink); border-color:var(--ink); color:var(--surface); }
 .presets button { padding:5px 9px; }
 
+.odh { margin:4px 0 2px; font-size:15px; }
 /* The meter: the one bold element */
 .meter { display:grid; grid-template-columns:minmax(0,1.2fr) repeat(3,minmax(0,1fr)); background:var(--meter);
   border-radius:6px; margin:14px 0; overflow:hidden; transition:opacity .15s; }
@@ -103,7 +105,7 @@ footer { margin:20px 0 0; color:var(--ink2); font-size:13px; max-width:90ch; }
 .chips { flex-wrap:wrap; }
 .chips + .chips, .chips + .pair, .pair + .chips { margin-top:6px; }
 .chips button.on { background:var(--ink); border-color:var(--ink); color:var(--surface); }
-.meter { grid-template-columns:minmax(0,1.15fr) repeat(4,minmax(0,1fr)); }
+.meter { grid-template-columns:minmax(0,1.15fr) repeat(5,minmax(0,1fr)); }
 .stat .v { font-size:clamp(24px,2.8vw,38px); }
 @media (max-width:1000px) { .meter { grid-template-columns:repeat(2,minmax(0,1fr)); } .stat:nth-child(odd) { border-left:0; } .stat:nth-child(n+3) { border-top:1px solid rgba(255,255,255,.12); } }
 .main { display:grid; grid-template-columns:minmax(260px,340px) minmax(0,1fr); gap:0 14px; }

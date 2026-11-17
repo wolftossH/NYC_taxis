@@ -1,4 +1,7 @@
-"""Precomputed additive cube over (date, hour, pickup zone) and rate recomputation.
+"""Precomputed additive cube over (date, 15-minute slot, zone) and rate recomputation.
+
+slot = hour * 4 + minute // 15 (0-95). Pickups (trips and money sums) are keyed by pickup time and
+pickup zone; `dropoffs` and the `do_*` card-tip counts are keyed by dropoff time and dropoff zone.
 
 Only additive quantities (counts, sums, occupied minutes) are stored. Rates are
 recomputed from summed numerators/denominators for whatever period is selected,
@@ -14,7 +17,13 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 CUBE = DATA / "cube.parquet"
 TRAFFIC = DATA / "traffic_hourly.parquet"
 OD = DATA / "od.parquet"
-SUMS = ["trips", "fare_sum", "tip_sum", "tolls_sum", "minutes_sum", "card_trips", "good_tip_trips"]
+SUMS = ["trips", "fare_sum", "tip_sum", "tolls_sum", "minutes_sum", "card_trips", "good_tip_trips",
+        "card_fare_sum", "card_tip_sum", "dropoffs", "do_card_trips", "do_good_tip_trips"]
+SLOTS = 96
+
+
+def _slot(t: pd.Series) -> pd.Series:
+    return (t.dt.hour * 4 + t.dt.minute // 15).astype("int8")
 
 
 def _find(name: str) -> Path:
@@ -26,42 +35,61 @@ def _find(name: str) -> Path:
 
 
 def build() -> None:
-    parts, od_parts = [], []
+    parts, do_parts, od_parts = [], [], []
     for batch in pq.ParquetFile(_find("taxi_trips.parquet")).iter_batches(batch_size=500_000):
         d = batch.to_pandas()
         pu = pd.to_datetime(d["tpep_pickup_datetime"])
-        minutes = (pd.to_datetime(d["tpep_dropoff_datetime"]) - pu).dt.total_seconds() / 60
+        do = pd.to_datetime(d["tpep_dropoff_datetime"])
+        minutes = (do - pu).dt.total_seconds() / 60
         card = d["payment_type"] == 1
+        good_tip = card & (d["tip_amount"] > 0.2 * d["fare_amount"])
+        slot = _slot(pu)
         g = pd.DataFrame({
-            "date": pu.dt.normalize(), "hour": pu.dt.hour.astype("int8"), "zone": d["PULocationID"],
+            "date": pu.dt.normalize(), "slot": slot, "zone": d["PULocationID"],
             "trips": 1, "fare_sum": d["fare_amount"], "tip_sum": d["tip_amount"],
             "tolls_sum": d["tolls_amount"], "minutes_sum": minutes,
             "card_trips": card.astype(int),
-            "good_tip_trips": (card & (d["tip_amount"] > 0.2 * d["fare_amount"])).astype(int),
-        }).groupby(["date", "hour", "zone"], as_index=False).sum()
+            "good_tip_trips": good_tip.astype(int),
+            "card_fare_sum": d["fare_amount"].where(card, 0.0), "card_tip_sum": d["tip_amount"].where(card, 0.0),
+        }).groupby(["date", "slot", "zone"], as_index=False).sum()
         parts.append(g)
-        od_parts.append(pd.DataFrame({"date": pu.dt.normalize(), "hour": pu.dt.hour.astype("int8"),
+        do_parts.append(pd.DataFrame({"date": do.dt.normalize(), "slot": _slot(do), "zone": d["DOLocationID"],
+                                      "dropoffs": 1, "do_card_trips": card.astype(int),
+                                      "do_good_tip_trips": good_tip.astype(int)})
+                        .groupby(["date", "slot", "zone"], as_index=False).sum())
+        od_parts.append(pd.DataFrame({"date": pu.dt.normalize(), "slot": slot,
                                       "pu": d["PULocationID"].astype("int16"), "do": d["DOLocationID"].astype("int16"),
-                                      "trips": 1}).groupby(["date", "hour", "pu", "do"], as_index=False).sum())
-    cube = pd.concat(parts).groupby(["date", "hour", "zone"], as_index=False).sum()
+                                      "trips": 1}).groupby(["date", "slot", "pu", "do"], as_index=False).sum())
+    keys = ["date", "slot", "zone"]
+    pick = pd.concat(parts).groupby(keys, as_index=False).sum()
+    drop = pd.concat(do_parts).groupby(keys, as_index=False).sum()
+    # trips ending after midnight on the last day would add dropoff-only dates past the loaded period
+    drop = drop[drop.date.between(pick.date.min(), pick.date.max())]
+    cube = pick.merge(drop, on=keys, how="outer").fillna(0)
+    for c in ["trips", "card_trips", "good_tip_trips", "dropoffs", "do_card_trips", "do_good_tip_trips"]:
+        cube[c] = cube[c].astype("int64")
+    cube["slot"] = cube["slot"].astype("int8")
+    cube["zone"] = cube["zone"].astype("int16")
     DATA.mkdir(exist_ok=True)
     cube.to_parquet(CUBE, index=False)
-    pd.concat(od_parts).groupby(["date", "hour", "pu", "do"], as_index=False).sum().to_parquet(OD, index=False)
+    pd.concat(od_parts).groupby(["date", "slot", "pu", "do"], as_index=False).sum().to_parquet(OD, index=False)
 
     t = pd.read_parquet(_find("traffic_observations.parquet"),
                         columns=["speed", "travel_time", "data_as_of", "borough"])
-    t["date"] = t["data_as_of"].dt.normalize()
-    t["hour"] = t["data_as_of"].dt.hour
-    t["borough"] = t["borough"].astype(str)
-    t.groupby(["date", "hour", "borough"], as_index=False).agg(
-        speed=("speed", "mean"), travel_time=("travel_time", "mean"), n=("speed", "size")
+    t = t[t.speed.notna()]
+    t = t.assign(date=t["data_as_of"].dt.normalize(), slot=_slot(t["data_as_of"]), borough=t["borough"].astype(str))
+    # additive: speed_sum / n is recomputed for whatever days, slots and borough are selected
+    t.groupby(["date", "slot", "borough"], as_index=False).agg(
+        speed_sum=("speed", "sum"), n=("speed", "size")
     ).to_parquet(TRAFFIC, index=False)
 
 
 class Store:
     def __init__(self):
-        if not CUBE.exists() or not TRAFFIC.exists() or not OD.exists():
-            build()
+        stale = (CUBE.exists() and not {"date", "slot", "zone", *SUMS} <= set(pq.read_schema(CUBE).names)) or (
+            TRAFFIC.exists() and "speed_sum" not in pq.read_schema(TRAFFIC).names)
+        if stale or not CUBE.exists() or not TRAFFIC.exists() or not OD.exists():
+            build()  # missing, or a cache built before a column was added
         od = pd.read_parquet(OD)
         self.od_by_pu = {k: g.drop(columns="pu") for k, g in od.groupby("pu")}
         self.cube = pd.read_parquet(CUBE)
@@ -73,13 +101,13 @@ class Store:
                 "traffic_dates": sorted({str(d.date()) for d in self.traffic.date}),
                 "trips": int(c.trips.sum())}
 
-    def select(self, start, end, weekdays, hour_from, hour_to, *, all_hours=False, all_weekdays=False):
+    def select(self, start, end, weekdays, slot_from, slot_to, *, all_slots=False, all_weekdays=False):
         c = self.cube
         m = (c.date >= pd.Timestamp(start)) & (c.date <= pd.Timestamp(end))
         if not all_weekdays:
             m &= c.date.dt.weekday.isin(weekdays)
-        if not all_hours:
-            m &= (c.hour >= hour_from) & (c.hour <= hour_to)
+        if not all_slots:
+            m &= (c.slot >= slot_from) & (c.slot <= slot_to)
         return c[m]
 
     def n_days(self, start, end, weekdays) -> int:
@@ -93,14 +121,19 @@ def rates(df: pd.DataFrame, n_days) -> pd.DataFrame:
     out = df.copy()
     with np.errstate(divide="ignore", invalid="ignore"):
         out["pickups_per_day"] = out["trips"] / n_days
-        out["rate"] = (out["fare_sum"] + out["tip_sum"]) / out["minutes_sum"]
+        # profitability index: (fare + tip - tolls) per occupied minute
+        out["rate"] = (out["fare_sum"] + out["tip_sum"] - out["tolls_sum"]) / out["minutes_sum"]
         out["avg_duration"] = out["minutes_sum"] / out["trips"]
         out["tip_rate"] = 100 * out["good_tip_trips"] / out["card_trips"].replace(0, np.nan)
+        out["card_tip_pct"] = 100 * out["card_tip_sum"] / out["card_fare_sum"].replace(0, np.nan)
+        out["do_tip_rate"] = 100 * out["do_good_tip_trips"] / out["do_card_trips"].replace(0, np.nan)
+        out["dropoffs_per_day"] = out["dropoffs"] / n_days
+        out["pickups_per_dropoff"] = out["trips"] / out["dropoffs"].replace(0, np.nan)
     return out.replace([np.inf, -np.inf], np.nan)
 
 
-def zone_summary(store: Store, start, end, weekdays, hour_from, hour_to, min_trips) -> dict:
-    sel = store.select(start, end, weekdays, hour_from, hour_to)
+def zone_summary(store: Store, start, end, weekdays, slot_from, slot_to, min_trips) -> dict:
+    sel = store.select(start, end, weekdays, slot_from, slot_to)
     n_days = max(store.n_days(start, end, weekdays), 1)
     z = rates(sel.groupby("zone")[SUMS].sum().reset_index(), n_days)
     z["eligible"] = (z.trips >= min_trips) & (z.minutes_sum > 0)
@@ -116,34 +149,54 @@ def zone_summary(store: Store, start, end, weekdays, hour_from, hour_to, min_tri
             z.loc[i, "pareto"] = True
             best = r.rate
     tot = rates(pd.DataFrame([sel[SUMS].sum()]), n_days).iloc[0]
-    cols = ["zone", "trips", "pickups_per_day", "rate", "avg_duration", "tip_rate",
-            "attractiveness", "eligible", "pareto"]
-    totals = tot[["trips", "pickups_per_day", "rate", "avg_duration", "tip_rate"]].to_dict()
+    cols = ["zone", "trips", "pickups_per_day", "rate", "avg_duration", "tip_rate", "card_tip_pct", "do_tip_rate",
+            "dropoffs_per_day", "pickups_per_dropoff", "attractiveness", "eligible", "pareto"]
+    totals = tot[["trips", "pickups_per_day", "rate", "avg_duration", "tip_rate", "card_tip_pct", "do_tip_rate",
+                  "dropoffs_per_day"]].to_dict()
     return {"n_days": n_days, "totals": _clean(totals),
             "zones": [_clean(r) for r in z[cols].to_dict("records")]}
 
 
-def timeseries(store: Store, start, end, weekdays, hour_from, hour_to, zone=None) -> dict:
+def traffic_by_slot(store: Store, start, end, weekdays, borough=None) -> dict:
+    """Mean DOT speed per 15-minute slot over the selected taxi dates/weekdays (falls back to all
+    traffic days on those weekdays when the range has none), limited to `borough` when it has data."""
+    t = store.traffic[store.traffic.date.dt.weekday.isin(weekdays)]
+    in_range = t[(t.date >= pd.Timestamp(start)) & (t.date <= pd.Timestamp(end))]
+    matched = not in_range.empty
+    t = in_range if matched else t
+    if borough is not None and (t.borough == borough).any():
+        t = t[t.borough == borough]
+    else:
+        borough = None
+    g = t.groupby("slot")[["speed_sum", "n"]].sum()
+    s = (g.speed_sum / g.n).rename("speed").reset_index()
+    days = t.date.drop_duplicates()
+    return {"by_slot": [_clean(r) for r in s.to_dict("records")], "matched": matched, "borough": borough,
+            "n_days": int(len(days)),
+            "first": str(days.min().date()) if len(days) else None,
+            "last": str(days.max().date()) if len(days) else None}
+
+
+def timeseries(store: Store, start, end, weekdays, slot_from, slot_to, zone=None, borough=None) -> dict:
     def pick(sel):
         return sel if zone is None else sel[sel.zone == zone]
 
-    # by hour: date + weekday filters only, so the hour axis shows the whole day
-    sel = pick(store.select(start, end, weekdays, hour_from, hour_to, all_hours=True))
+    # by slot: date + weekday filters only, so the time axis shows the whole day
+    sel = pick(store.select(start, end, weekdays, slot_from, slot_to, all_slots=True))
     n_days = max(store.n_days(start, end, weekdays), 1)
-    h = rates(sel.groupby("hour")[SUMS].sum().reset_index(), n_days)
-    # by weekday: date + hour filters only
-    sel2 = pick(store.select(start, end, weekdays, hour_from, hour_to, all_weekdays=True))
+    h = sel.groupby("slot")[SUMS].sum().reindex(range(SLOTS), fill_value=0).rename_axis("slot").reset_index()
+    h = rates(h, n_days)
+    # by weekday: date + time-of-day filters only
+    sel2 = pick(store.select(start, end, weekdays, slot_from, slot_to, all_weekdays=True))
     sel2 = sel2.assign(weekday=sel2.date.dt.weekday)
     dates = store.cube.date.drop_duplicates()
     dates = dates[(dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))]
     per_wd = dates.dt.weekday.value_counts()
     w = sel2.groupby("weekday")[SUMS].sum().reset_index()
     w = rates(w, w.weekday.map(per_wd).clip(lower=1))
-    tr = store.traffic.assign(sp=lambda x: x.speed * x.n).groupby("hour")[["sp", "n"]].sum()
-    tr = (tr.sp / tr.n).rename("speed").reset_index()
-    return {"by_hour": [_clean(r) for r in h.to_dict("records")],
+    return {"by_slot": [_clean(r) for r in h.to_dict("records")],
             "by_weekday": [_clean(r) for r in w.to_dict("records")],
-            "traffic_by_hour": [_clean(r) for r in tr.to_dict("records")]}
+            "traffic": traffic_by_slot(store, start, end, weekdays, borough)}
 
 
 def _clean(d: dict) -> dict:
@@ -162,16 +215,19 @@ def _clean(d: dict) -> dict:
     return out
 
 
-def destinations(store: Store, zone, start, end, weekdays, hour_from, hour_to, top=8) -> dict:
+def destinations(store: Store, zone, start, end, weekdays, slot_from, slot_to, top=10) -> dict:
     """P(zone -> B) = trips A->B / all selected trips departing A."""
     g = store.od_by_pu.get(zone)
     if g is None:
         return {"total": 0, "top": [], "other": 0.0}
-    m = (g.date >= pd.Timestamp(start)) & (g.date <= pd.Timestamp(end)) & g.date.dt.weekday.isin(weekdays)         & (g.hour >= hour_from) & (g.hour <= hour_to)
+    m = ((g.date >= pd.Timestamp(start)) & (g.date <= pd.Timestamp(end)) & g.date.dt.weekday.isin(weekdays)
+         & (g.slot >= slot_from) & (g.slot <= slot_to))
     by = g[m].groupby("do").trips.sum().sort_values(ascending=False)
     total = int(by.sum())
     if not total:
         return {"total": 0, "top": [], "other": 0.0}
     head = by.head(top)
     return {"total": total, "other": round(float(1 - head.sum() / total), 4),
-            "top": [{"zone": int(k), "trips": int(v), "prob": round(float(v / total), 4)} for k, v in head.items()]}
+            "top": [{"zone": int(k), "trips": int(v), "prob": round(float(v / total), 4)} for k, v in head.items()],
+            # every destination, for colouring the map by OD probability
+            "all": [{"zone": int(k), "trips": int(v), "prob": round(float(v / total), 6)} for k, v in by.items()]}

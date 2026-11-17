@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 
 URL = "https://data.cityofnewyork.us/api/geospatial/8meu-9t5y?method=export&format=GeoJSON"
-CACHE = Path(__file__).resolve().parents[1] / "data" / "zones.geojson"
+CACHE = Path(__file__).resolve().parents[1] / "data" / "new" / "zones.geojson"
 
 
 def _round(coords):
