@@ -29,7 +29,9 @@ Team project; the spec is `Project document.pdf` (metric definitions in its Appe
 - System Python is `C:\HuyTrinh\Anaconda\python.exe`; `python` on PATH is the Store stub. Node is not installed.
 - uvicorn runs without `--reload`: restart the server after any backend change. An old server still serves the new
   frontend from disk, so new endpoints just 404 (this caused the "map click does nothing" bug).
-- Loaded data: Jun-Sep 2026 (13.7M trips, 122 days) + one traffic day. The backend reads the most recently written
+- Loaded data: Jan-Sep 2026 (31.6M trips, 273 days) + DOT traffic 2026-08-01 to 2026-11-15 (106 days; DOT has none
+  for 10-12). `clean_handoff_2026-01_to_2026-09` was made by streaming the Jan-May and Jun-Sep handoffs' taxi_trips into
+  one file (running all 9 months through the notebook at once risks running out of RAM). The backend reads the most recently written
   `data/taxi_clean_data/clean_handoff_*` folder. Delete `data/cube.parquet`, `data/od.parquet`,
   `data/traffic_hourly.parquet` and restart the server after fetching new data (rebuild takes ~40 s). `Store` also
   rebuilds by itself when the cached cube lacks any column in `cube.SUMS` or the traffic cache lacks `speed_sum`, so
@@ -77,8 +79,9 @@ Team project; the spec is `Project document.pdf` (metric definitions in its Appe
   is frontend-only (not in `/api/summary`): it colours the map from `od.all` and needs a selected zone.
 - Pareto frontier maximises pickups/day and earning rate among zones meeting `min_trips`; computed server-side.
 - Traffic (`traffic_hourly.parquet`, despite the name) is additive per (date, 15-min slot, borough): `speed_sum`, `n`.
-  The indexed chart uses traffic on the selected dates/weekdays (and the selected zone's borough); when the range has
-  no traffic days it falls back to all traffic days and the UI must say it is not a same-day match.
+  The indexed chart uses only selected days that have both taxi and traffic data, for BOTH lines (`rate_by_slot` is
+  recomputed over those days), plus the selected zone's borough. Traffic starts 2026-08-01 (none for 2026-10-12).
+  When the selection has no traffic days it falls back to all traffic days and the UI must say it is not a same-day match.
 
 ## Frontend conventions
 

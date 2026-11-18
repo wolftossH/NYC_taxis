@@ -85,12 +85,12 @@ Everything lives under `data/` and is generated locally.
 | File | Grain | Contents |
 |---|---|---|
 | `taxi_clean_data/raw/tlc/yellow_tripdata_<month>.parquet` | trip | Official TLC download, 21 columns. |
-| `taxi_clean_data/raw/traffic/*.parquet` | link reading | Raw NYC DOT traffic speeds for the selected day. |
+| `taxi_clean_data/raw/traffic/*.parquet` | link reading | Raw NYC DOT traffic speeds, one file per day (cached). |
 | `taxi_clean_data/clean_handoff_<months>/taxi_trips.parquet` | trip | 10 columns, valid trips only. For 2026-09: 3,635,168 of 3,876,044 rows kept. |
 | `taxi_clean_data/clean_handoff_<months>/traffic_observations.parquet` | link reading | link_id, speed, travel_time, data_as_of, borough, link_name, link_points. |
 | `cube.parquet` | date x 15-min slot x zone | Additive sums used by the dashboard: pickup sums by pickup time and zone, `dropoffs` by dropoff time and zone. |
 | `od.parquet` | date x 15-min slot x pickup x dropoff | Trip counts for destination probabilities. |
-| `traffic_hourly.parquet` | hour x borough | Mean speed and travel time for the traffic day. |
+| `traffic_hourly.parquet` | date x 15-min slot x borough | Additive `speed_sum` and `n` (readings); mean speed = sum / n for any selection. |
 | `zones.geojson` | zone | 263 zone polygons with LocationID, zone name and borough. |
 
 Cleaning keeps pickups inside their source month, zone IDs 1-263, durations of 1-240 minutes, distance above 0 and
@@ -103,7 +103,7 @@ up to 100 miles, and finite non-negative fare, tip, tolls and total amounts. Cas
 | `GET /api/meta` | Available date range and settings. |
 | `GET /api/zones` | Zone polygons. |
 | `GET /api/summary` | Per-zone metrics and Pareto flags for `start`, `end`, `weekdays`, time window and `min_trips` (default 30). |
-| `GET /api/timeseries` | Hour, weekday and traffic series for the same filters. |
+| `GET /api/timeseries` | 15-minute, weekday and traffic series for the same filters (`traffic`: speed and earning rate per slot on the selected days that have traffic data, limited to the zone's borough when `zone` is set). |
 | `GET /api/od` | Destination breakdown for one pickup `zone`. |
 
 The time window is `slot_from` / `slot_to`: inclusive 15-minute slots 0-95 (slot = hour x 4 + minute / 15).
@@ -128,7 +128,7 @@ period, never by averaging stored rates.
 
 ## Limitations
 
-- Traffic is a single DOT day, chosen independently of the taxi dates. It is not a same-day join, and there is no traffic-to-zone mapping, only a borough roll-up.
+- Traffic speeds start on 2026-08-01 (no DOT data for 2026-10-12; 2026-10-13 is partial). The indexed chart compares the selected days that have both taxi and traffic data; when there are none it falls back to all traffic days, which compares daily shapes rather than the same days. There is no traffic-to-zone mapping, only a borough roll-up.
 - Cash tips are unobserved, so tip metrics describe card trips only.
 - Pickups are recorded service activity, not all passenger demand.
 - The earning rate deducts tolls but not fuel or other costs, and ignores empty driving between fares.

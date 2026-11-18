@@ -157,13 +157,24 @@ def zone_summary(store: Store, start, end, weekdays, slot_from, slot_to, min_tri
             "zones": [_clean(r) for r in z[cols].to_dict("records")]}
 
 
-def traffic_by_slot(store: Store, start, end, weekdays, borough=None) -> dict:
-    """Mean DOT speed per 15-minute slot over the selected taxi dates/weekdays (falls back to all
-    traffic days on those weekdays when the range has none), limited to `borough` when it has data."""
+def traffic_by_slot(store: Store, start, end, weekdays, borough=None, sel=None) -> dict:
+    """Mean DOT speed per 15-minute slot over the selected dates/weekdays, limited to `borough` when it has data.
+
+    matched: the selection holds traffic days. Then `rate_by_slot` is the earning rate over exactly those
+    days (from `sel`, the all-slot cube selection), so both indexed lines cover the same days. Otherwise
+    traffic falls back to all loaded traffic days on the selected weekdays and the rate stays unrestricted."""
     t = store.traffic[store.traffic.date.dt.weekday.isin(weekdays)]
     in_range = t[(t.date >= pd.Timestamp(start)) & (t.date <= pd.Timestamp(end))]
+    taxi_days = set(store.cube.date[(store.cube.date >= pd.Timestamp(start)) & (store.cube.date <= pd.Timestamp(end))
+                                    & store.cube.date.dt.weekday.isin(weekdays)].unique())
+    in_range = in_range[in_range.date.isin(taxi_days)]  # same days on both lines
     matched = not in_range.empty
     t = in_range if matched else t
+    rate = []
+    if matched and sel is not None:
+        r = sel[sel.date.isin(set(in_range.date))].groupby("slot")[SUMS].sum()
+        r = rates(r.reindex(range(SLOTS), fill_value=0).rename_axis("slot").reset_index(), 1)
+        rate = [_clean(x) for x in r[["slot", "rate"]].to_dict("records")]
     if borough is not None and (t.borough == borough).any():
         t = t[t.borough == borough]
     else:
@@ -171,8 +182,8 @@ def traffic_by_slot(store: Store, start, end, weekdays, borough=None) -> dict:
     g = t.groupby("slot")[["speed_sum", "n"]].sum()
     s = (g.speed_sum / g.n).rename("speed").reset_index()
     days = t.date.drop_duplicates()
-    return {"by_slot": [_clean(r) for r in s.to_dict("records")], "matched": matched, "borough": borough,
-            "n_days": int(len(days)),
+    return {"by_slot": [_clean(r) for r in s.to_dict("records")], "rate_by_slot": rate,
+            "matched": matched, "borough": borough, "n_days": int(len(days)), "n_taxi_days": len(taxi_days),
             "first": str(days.min().date()) if len(days) else None,
             "last": str(days.max().date()) if len(days) else None}
 
@@ -196,7 +207,7 @@ def timeseries(store: Store, start, end, weekdays, slot_from, slot_to, zone=None
     w = rates(w, w.weekday.map(per_wd).clip(lower=1))
     return {"by_slot": [_clean(r) for r in h.to_dict("records")],
             "by_weekday": [_clean(r) for r in w.to_dict("records")],
-            "traffic": traffic_by_slot(store, start, end, weekdays, borough)}
+            "traffic": traffic_by_slot(store, start, end, weekdays, borough, sel)}
 
 
 def _clean(d: dict) -> dict:

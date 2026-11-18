@@ -522,19 +522,27 @@ function renderVega() {
   }, { actions: false, config: vegaConfig(), renderer: "svg" });
 
   // Indexed to each series' own daily mean (=100) so both share ONE axis; no dual axis.
-  // Both series are per 15-minute window over the same selected dates and weekdays (see trafficNote).
+  // Both series are per 15-minute window. When the selection holds traffic days, the rate line is recomputed
+  // over exactly those days (traffic.rate_by_slot), so both lines describe the same days (see trafficNote).
   const tr = series.traffic, T = tr.by_slot.filter((d) => d.speed != null);
-  const mean = (a) => d3.mean(a.filter((v) => v != null));
-  const mr = mean(H.map((d) => d.rate)), ms = mean(T.map((d) => d.speed));
+  const R = (tr.matched ? tr.rate_by_slot : series.by_slot).filter((d) => d.rate != null);
+  const mean = (a) => d3.mean(a);
+  const mr = mean(R.map((d) => d.rate)), ms = mean(T.map((d) => d.speed));
   const NR = "Fare + tip − tolls per min", NS = tr.borough ? `Traffic speed (${tr.borough})` : "Traffic speed";
   const idx = [];
-  H.forEach((d) => { if (d.rate != null) idx.push({ t: d.t, time: d.time, series: NR, index: (100 * d.rate) / mr }); });
+  R.forEach((d) => idx.push({ t: d.slot / 4, time: slotLabel(d.slot / 4), series: NR, index: (100 * d.rate) / mr,
+    value: `$${d.rate.toFixed(2)} per min` }));
   T.forEach((d) => idx.push({ t: d.slot / 4, time: slotLabel(d.slot / 4), series: NS, index: (100 * d.speed) / ms,
-    mph: d.speed }));
-  const span = tr.n_days ? `${tr.n_days} day${tr.n_days > 1 ? "s" : ""}, ${tr.first} to ${tr.last}` : "no days";
+    value: `${d.speed.toFixed(1)} mph` }));
+  const plural = (n) => `${n} day${n === 1 ? "" : "s"}`;
+  const span = tr.n_days ? `${plural(tr.n_days)}, ${tr.first} to ${tr.last}` : "no days";
+  const links = tr.borough ? `${tr.borough} road links only` : "road links in all boroughs";
   $("trafficNote").textContent = tr.matched
-    ? `Traffic: DOT speeds on the same selected dates and weekdays (${span})${tr.borough ? `, ${tr.borough} links only` : ", all boroughs"}.`
-    : `No traffic data in the selected dates, so traffic uses all loaded traffic days on the selected weekdays (${span}): this compares daily patterns, not the same days.`;
+    ? `Both lines cover the same ${span}: the selected days that also have NYC DOT speed data`
+      + (tr.n_days < tr.n_taxi_days ? ` (${tr.n_days} of ${tr.n_taxi_days} selected days; traffic data starts 2026-08-01)` : "")
+      + `. Traffic speed is the mean over ${links}.`
+    : `None of the selected days has traffic data (it starts 2026-08-01), so the traffic line uses all ${span} of traffic`
+      + ` on the selected weekdays, ${links}. The earning rate covers the selected days. This compares daily shapes, not the same days.`;
   $("idxKey").replaceChildren(el("span", { className: "key" }, el("i", { style: `background:${s1}` }), NR),
     el("span", { className: "key" }, el("i", { style: `background:${s2}` }), NS),
     el("div", { textContent: "Each series = 100 at its own daily average." }));
@@ -551,7 +559,7 @@ function renderVega() {
       { mark: { type: "point", filled: true, size: 70, stroke: css("--surface"), strokeWidth: 2 },
         encoding: { x: HX, y, color: col, opacity: { condition: { param: "hovT", empty: false, value: 1 }, value: 0 },
           tooltip: [{ field: "series", title: "Series" }, { field: "time", title: "From" }, { field: "index", title: "Index", format: ".0f" },
-            { field: "mph", title: "Speed (mph)", format: ".1f" }] } },
+            { field: "value", title: "Value" }] } },
     ],
   }, { actions: false, config: vegaConfig(), renderer: "svg", tooltip: { theme: isDark() ? "dark" : "light" } });
 }
