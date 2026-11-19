@@ -63,14 +63,50 @@ pip install -r requirements.txt
 ### Step 5. Download and clean the data
 
 ```
-python scripts/fetch_data.py [YYYY-MM] [traffic-day]
+python scripts/fetch_data.py [MONTHS] [TRAFFIC-DAYS]
 ```
 
+- `MONTHS`: one or more TLC months as `YYYY-MM`, separated by commas.
+- `TRAFFIC-DAYS`: one NYC DOT day (`YYYY-MM-DD`) or a range `FROM:TO` with both days included.
 - With no arguments it uses month `2026-09` and traffic day `2026-09-15`.
-- For several months, separate them with commas:
-  `python scripts/fetch_data.py 2026-06,2026-07,2026-08,2026-09 2026-09-15`.
 - The script runs the preprocessing notebook and writes a cleaned hand-off to
-  `data/taxi_clean_data/clean_handoff_<months>/`. Raw downloads are cached, so a re-run reuses them.
+  `data/taxi_clean_data/clean_handoff_<months>/`.
+- Raw downloads are cached and reused on the next run. TLC files go to `data/taxi_clean_data/raw/tlc/`, and
+  traffic files go to `data/taxi_clean_data/raw/traffic/`, one file per day (about 0.25 MB each).
+
+> **Always list every month and the whole traffic range you want.** The dashboard reads only the newest cleaned
+> folder, and that folder holds only what the last run asked for. A shorter list shrinks the dashboard's data.
+> Cached files make re-listing cheap.
+
+**Example A: several months, traffic for one day**
+
+TLC trips for January to September 2026, plus traffic speeds for 15 September:
+
+```
+python scripts/fetch_data.py 2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09 2026-09-15
+```
+
+**Example B: several months, traffic for a range of days**
+
+The same months, with traffic speeds for every day from 1 January to 30 September. Each day is a separate DOT
+download:
+
+```
+python scripts/fetch_data.py 2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09 2026-01-01:2026-09-30
+```
+
+**Example C: add traffic only, for months you already have**
+
+There is no switch to skip taxi data. Instead, list the taxi months you already downloaded: their raw files come
+from cache, and only the missing traffic days are downloaded. This adds June-September traffic to June-September
+taxi data:
+
+```
+python scripts/fetch_data.py 2026-06,2026-07,2026-08,2026-09 2026-06-01:2026-09-30
+```
+
+After any fetch, follow "Load different months or traffic days" under [Common tasks](#common-tasks) so the server rebuilds its
+aggregates.
 
 ### Step 6. Start the server
 
@@ -99,10 +135,10 @@ It compares cube totals against the raw parquet and must print `OK`.
 
 Activate the environment first (Step 3) if this is a new terminal.
 
-**Load different months**
+**Load different months or traffic days**
 
 1. Stop the server (Ctrl+C).
-2. Run Step 5 with the new months.
+2. Run Step 5 with every month and the whole traffic range you want (see the examples there).
 3. Delete `data/cube.parquet`, `data/od.parquet` and `data/traffic_hourly.parquet`.
 4. Start the server again (Step 6). It rebuilds the three files from the newest hand-off.
 
@@ -110,37 +146,6 @@ Activate the environment first (Step 3) if this is a new terminal.
 
 Stop and restart uvicorn (Step 6). It runs without `--reload`, so changes are not picked up automatically.
 Frontend files are static and only need a browser refresh.
-### Fetching data: examples
-
-TLC trips for January to September 2026, plus traffic speeds for one day:
-
-```
-.venv\Scripts\python scripts\fetch_data.py 2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09 2026-09-15
-```
-
-The same months, with traffic speeds for a range of days (`FROM:TO`, both days included). Each day is a separate
-NYC DOT download (about 0.25 MB), cached under `data/taxi_clean_data/raw/traffic/`:
-
-```
-.venv\Scripts\python scripts\fetch_data.py 2026-01,2026-02,2026-03,2026-04,2026-05,2026-06,2026-07,2026-08,2026-09 2026-01-01:2026-09-30
-```
-
-Traffic speeds only. There is no switch to skip taxi data, so list the taxi months you already have: their raw files
-are reused from cache and only the missing traffic days are downloaded. This gets traffic for June to September
-alongside the loaded June-September taxi data:
-
-```
-.venv\Scripts\python scripts\fetch_data.py 2026-06,2026-07,2026-08,2026-09 2026-06-01:2026-09-30
-```
-
-Always list every loaded month and the whole traffic range you want (cached days are reused). The dashboard reads
-only the newest cleaned folder, which holds just what the last run asked for, so a shorter list shrinks its data.
-
-### After fetching
-
-- On the first server start the backend builds `data/cube.parquet`, `data/od.parquet` and
-  `data/traffic_hourly.parquet`, and downloads zone polygons from NYC Open Data to `data/zones.geojson`.
-- After fetching new data, delete those three parquet files so the server rebuilds them from the newest hand-off.
 
 ## Project layout
 
@@ -148,7 +153,7 @@ only the newest cleaned folder, which holds just what the last run asked for, so
 |---|---|
 | `download_and_preprocess_taxi_(KV)_new.ipynb` | Downloads TLC and DOT data and cleans it (cells 0-16), then explores the metrics (cells 17-28). `scripts/fetch_data.py` runs cells 0-16 with overridden settings. |
 | `download_and_preprocess_taxi_(KV).ipynb` | Older copy of the notebook; cells 0-16 are identical. Not used by the scripts. |
-| `scripts/fetch_data.py` | Runs the notebook for the chosen months and traffic day. |
+| `scripts/fetch_data.py` | Runs the notebook for the chosen months and traffic day or range. |
 | `scripts/check_cube.py` | Verifies the cube against the raw trips. |
 | `backend/cube.py` | Builds the aggregates and recomputes rates for a selected period. |
 | `backend/main.py` | FastAPI routes. Also serves `frontend/` at `/`. |
@@ -194,6 +199,7 @@ Cleaning keeps trips that:
 
 The cube stores only additive quantities per (date, 15-minute slot, zone): trips, fare, tip, tolls, occupied minutes,
 card trips, good-tip trips, card fares and card tips (by pickup), and dropoffs, card trips and good-tip trips by dropoff time and zone. Rates are recomputed from summed numerators and denominators for the selected
+period, never by averaging stored rates.
 
 - **Pickups per day** = trips / selected days.
 - **Earning rate (profitability index)** = (fare + tip − tolls) / occupied minutes.
