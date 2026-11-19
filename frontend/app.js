@@ -68,10 +68,7 @@ async function init() {
   [meta, zones, basemap] = await Promise.all([getJSON("/api/meta"), getJSON("/api/zones"),
     getJSON("/api/basemap").catch(() => ({ type: "FeatureCollection", features: [] }))]);
   zones.features.forEach((f) => byId.set(f.properties.LocationID, f.properties));
-  state.start = meta.min_date; state.end = meta.max_date;
-  $("start").min = $("end").min = meta.min_date; $("start").max = $("end").max = meta.max_date;
-  $("start").value = state.start; $("end").value = state.end;
-  $("sub").textContent = `${meta.trips.toLocaleString()} trips, ${meta.min_date} to ${meta.max_date}`;
+  applyMeta();
 
   const addDays = (iso, n) => new Date(Date.parse(iso) + n * 864e5).toISOString().slice(0, 10);
   const setRange = (a, b) => { state.start = $("start").value = a < meta.min_date ? meta.min_date : a; state.end = $("end").value = b; refresh(); };
@@ -129,7 +126,16 @@ async function init() {
   $("themeBtn").onclick = () => { document.documentElement.dataset.theme = isDark() ? "light" : "dark"; render(); };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render());
   buildMap();
+  initDataPanel();
   await refresh();
+}
+
+/* Date range and subtitle from /api/meta; also used after the data panel loads new data. */
+function applyMeta() {
+  state.start = meta.min_date; state.end = meta.max_date;
+  $("start").min = $("end").min = meta.min_date; $("start").max = $("end").max = meta.max_date;
+  $("start").value = state.start; $("end").value = state.end;
+  $("sub").textContent = `${meta.trips.toLocaleString()} trips, ${meta.min_date} to ${meta.max_date}`;
 }
 
 function setSlots(a, b, go = true) {
@@ -562,6 +568,180 @@ function renderVega() {
             { field: "value", title: "Value" }] } },
     ],
   }, { actions: false, config: vegaConfig(), renderer: "svg", tooltip: { theme: isDark() ? "dark" : "light" } });
+}
+
+/* ---- Data panel: pick TLC months and DOT traffic days, then load them (backend/datajobs.py) ---- */
+const STAGES = [["check", "Check traffic days with NYC DOT"], ["fetch", "Download and clean"],
+  ["merge", "Merge with the loaded data"], ["rebuild", "Rebuild the dashboard's aggregates"]];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const dp = { status: null, available: null, months: new Set(), timer: null };
+const addDaysISO = (iso, n) => new Date(Date.parse(iso) + n * 864e5).toISOString().slice(0, 10);
+const daysBetween = (a, b) => (a && b && a <= b ? Math.round((Date.parse(b) - Date.parse(a)) / 864e5) + 1 : 0);
+const fmtSecs = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+const monthLabel = (m) => `${MONTHS[+m.slice(5) - 1]} ${m.slice(0, 4)}`;
+const spanText = (ms) => (ms.length ? (ms.length === 1 ? monthLabel(ms[0]) : `${monthLabel(ms[0])} – ${monthLabel(ms[ms.length - 1])}`) : "none");
+
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : `${url}: ${r.status}`);
+  return j;
+}
+
+function initDataPanel() {
+  $("dataBtn").onclick = openDataPanel;
+  $("trFrom").onchange = $("trTo").onchange = renderEstimate;
+  $("dataGo").onclick = startDataJob;
+  $("dataCancel").onclick = () => postJSON("/api/data/cancel").catch(() => {});
+  // A load may already be running (started before a page reload): pick it up.
+  getJSON("/api/data/status").then((s) => { dp.status = s; if (s.job.state === "running") pollJob(); }).catch(() => {});
+  if (new URLSearchParams(location.search).get("panel") === "data") openDataPanel(); // deep link
+}
+
+async function openDataPanel() {
+  $("dataDlg").showModal();
+  try {
+    dp.status = await getJSON("/api/data/status");
+    const job = dp.status.job;
+    if (job.state !== "running") resetSelection();
+    else { // show what the running load asked for
+      dp.months = new Set(job.months);
+      $("trFrom").value = job.traffic_days[0] || ""; $("trTo").value = job.traffic_days.at(-1) || "";
+    }
+    renderDataPanel();
+    if (!dp.available) {
+      $("dataMonths").replaceChildren(el("p", { className: "note", textContent: "Checking which months TLC has published…" }));
+      dp.available = (await getJSON("/api/data/available")).months;
+      renderDataPanel();
+    }
+  } catch (e) {
+    $("dataEst").textContent = `Couldn't reach the server (${e.message}).`;
+  }
+}
+
+/* Selection starts as what is loaded, so ticking adds and unticking removes. */
+function resetSelection() {
+  const L = dp.status.loaded;
+  dp.months = new Set(L.months);
+  $("trFrom").value = L.traffic_dates[0] || ""; $("trTo").value = L.traffic_dates.at(-1) || "";
+}
+
+function renderDataPanel() {
+  const s = dp.status, L = s.loaded;
+  $("trFrom").max = $("trTo").max = s.max_traffic_day;
+  const gaps = L.traffic_missing.length ? ` (no DOT data: ${L.traffic_missing.join(", ")})` : "";
+  $("dataLoaded").replaceChildren(
+    el("b", { textContent: "Loaded now. " }),
+    `Taxi: ${spanText(L.months)}, ${L.trips.toLocaleString()} trips. `,
+    `Traffic: ${L.traffic_dates.length ? `${L.traffic_dates[0]} to ${L.traffic_dates.at(-1)}, ${L.traffic_dates.length} days${gaps}` : "none"}.`);
+  // Month grid: one row per year; a month can be picked when TLC publishes it or a copy is cached here.
+  const cached = new Set(s.cached_months), loaded = new Set(L.months);
+  const pickable = new Set([...(dp.available || []), ...cached, ...loaded]);
+  const years = [...new Set([...pickable].map((m) => m.slice(0, 4)))].sort();
+  const running = s.job.state === "running";
+  $("dataMonths").replaceChildren(...years.map((y) => el("div", { className: "mrow" },
+    el("span", { className: "yr", textContent: y }),
+    el("div", { className: "chips" }, ...MONTHS.map((name, i) => {
+      const m = `${y}-${String(i + 1).padStart(2, "0")}`, on = dp.months.has(m);
+      const b = el("button", { type: "button", textContent: name, disabled: running || !pickable.has(m) });
+      b.classList.toggle("on", on); b.ariaPressed = String(on);
+      if (cached.has(m)) b.classList.add("cached");
+      b.title = !pickable.has(m) ? "Not published by TLC yet" : loaded.has(m) ? "Loaded" : cached.has(m) ? "Downloaded before (no download needed)" : "Will be downloaded";
+      b.onclick = () => { on ? dp.months.delete(m) : dp.months.add(m); renderDataPanel(); };
+      return b;
+    })))));
+  $("trFrom").disabled = $("trTo").disabled = running;
+  $("trPresets").replaceChildren(...[
+    ["Loaded range", () => { $("trFrom").value = L.traffic_dates[0] || ""; $("trTo").value = L.traffic_dates.at(-1) || ""; }],
+    ["Same as taxi months", () => { const ms = [...dp.months].sort(); if (!ms.length) return;
+      const last = new Date(Date.UTC(+ms.at(-1).slice(0, 4), +ms.at(-1).slice(5), 0)).toISOString().slice(0, 10);
+      $("trFrom").value = `${ms[0]}-01`; $("trTo").value = last < s.max_traffic_day ? last : s.max_traffic_day; }],
+    ["Up to yesterday", () => { $("trTo").value = s.max_traffic_day; if (!$("trFrom").value) $("trFrom").value = addDaysISO(s.max_traffic_day, -29); }],
+  ].map(([t, f]) => el("button", { type: "button", textContent: t, disabled: running, onclick: () => { f(); renderEstimate(); } })));
+  renderEstimate();
+  renderJob(s.job);
+}
+
+/* What the selected load would do, and whether it can start. */
+function renderEstimate() {
+  const s = dp.status, L = s.loaded, sel = [...dp.months].sort();
+  const loaded = new Set(L.months), cached = new Set(s.cached_months), cachedDays = new Set(s.cached_traffic_days);
+  const add = sel.filter((m) => !loaded.has(m)), drop = L.months.filter((m) => !dp.months.has(m));
+  const dl = add.filter((m) => !cached.has(m));
+  const a = $("trFrom").value, b = $("trTo").value, n = daysBetween(a, b);
+  let newDays = 0; for (let i = 0; i < n; i++) if (!cachedDays.has(addDaysISO(a, i))) newDays++;
+  const sameTraffic = a === L.traffic_dates[0] && b === L.traffic_dates.at(-1);
+  const mb = dl.length * s.mb_per_month * 2; // raw + cleaned
+  const parts = [], warn = [];
+  if (add.length) parts.push(`add ${add.length} month${add.length > 1 ? "s" : ""} (${dl.length ? `${dl.length} to download, about ${mb} MB` : "all cached"})`);
+  if (drop.length) parts.push(`remove ${drop.map(monthLabel).join(", ")} (raw files stay cached)`);
+  if (!sameTraffic && n) parts.push(`traffic ${a} to ${b}: ${n} days, ${newDays} to download`);
+  if (!sel.length) warn.push("Select at least one taxi month.");
+  if (!n) warn.push("Pick a valid traffic range (from ≤ to).");
+  if (n > 400) warn.push("At most 400 traffic days per load.");
+  if (b > s.max_traffic_day) warn.push(`Traffic can run up to yesterday (${s.max_traffic_day}).`);
+  if (s.free_gb - mb / 1000 < 2) warn.push(`Low disk space: ${s.free_gb} GB free.`);
+  const changed = add.length || drop.length || !sameTraffic;
+  const running = s.job.state === "running";
+  if (running) {
+    $("dataEst").textContent = "A load is running. Settings are locked until it finishes; you can close this panel meanwhile.";
+    $("dataGo").disabled = true;
+    return;
+  }
+  $("dataEst").replaceChildren(
+    changed ? `This load will ${parts.join("; ")}. ` : "Nothing changed yet: tick months or change the traffic range. ",
+    el("span", { className: "muted", textContent: `${s.free_gb} GB free. Rebuilding takes a few minutes; the dashboard keeps showing the current data until it is done.` }),
+    ...warn.map((w) => el("span", { className: "warn", textContent: ` ${w}` })));
+  $("dataGo").disabled = running || !changed || !sel.length || !n || n > 400 || b > s.max_traffic_day;
+}
+
+async function startDataJob() {
+  $("dataGo").disabled = true;
+  try {
+    await postJSON("/api/data/fetch", { months: [...dp.months].sort(), traffic_from: $("trFrom").value, traffic_to: $("trTo").value });
+    pollJob();
+  } catch (e) {
+    $("dataEst").replaceChildren(el("span", { className: "warn", textContent: e.message }));
+    $("dataGo").disabled = false;
+  }
+}
+
+function pollJob() {
+  clearTimeout(dp.timer);
+  const tick = async () => {
+    try { dp.status = await getJSON("/api/data/status"); } catch { dp.timer = setTimeout(tick, 4000); return; }
+    const job = dp.status.job;
+    if ($("dataDlg").open) renderDataPanel(); else renderJob(job);
+    if (job.state === "running") { dp.timer = setTimeout(tick, 2000); return; }
+    if (job.state === "done") { // new data is live on the server: reload meta and every chart
+      meta = await getJSON("/api/meta"); applyMeta(); refresh();
+      resetSelection(); if ($("dataDlg").open) renderDataPanel();
+    }
+  };
+  tick();
+}
+
+function renderJob(job) {
+  const running = job.state === "running";
+  $("dataBtn").textContent = running ? "Data · loading…" : "Data";
+  $("dataCancel").hidden = !running || job.stage === "rebuild"; // the rebuild can't be interrupted safely
+  if (!job.state || job.state === "idle") { $("dataJob").hidden = true; return; }
+  $("dataJob").hidden = false;
+  const at = STAGES.findIndex(([k]) => k === job.stage), p = job.progress || {};
+  $("dataStages").replaceChildren(...STAGES.map(([k, label], i) => {
+    const st = job.state === "done" || i < at ? "done" : i === at ? (running ? "active" : "failed") : "todo";
+    let extra = "";
+    if (k === "check" && job.skipped_days?.length && i <= at) extra = ` · no DOT data for ${job.skipped_days.join(", ")} (skipped)`;
+    if (k === "fetch" && st === "active" && p.traffic_total != null)
+      extra = ` · TLC files ${p.tlc_done ?? 0}/${p.tlc_total} · traffic days ${p.traffic_done ?? 0}/${p.traffic_total}`;
+    return el("li", { className: st }, label, el("span", { className: "muted", textContent: extra }));
+  }));
+  $("dataMsg").textContent = running ? `Running for ${fmtSecs(job.elapsed || 0)}.`
+    : job.state === "done" ? "Done. The dashboard now shows the new data."
+    : job.state === "cancelled" ? "Cancelled. The previous data is still loaded."
+    : `Failed: ${job.error}. The previous data is still loaded.`;
+  $("dataMsg").className = job.state === "error" ? "warn" : "";
+  $("dataLog").textContent = (job.log || []).join("\n");
 }
 
 init().catch((e) => document.body.prepend(el("pre", { textContent: e.message, style: "color:#d03b3b" })));

@@ -19,8 +19,30 @@
     <h1>Where to wait next</h1>
     <p class="sub" id="sub">NYC yellow-taxi history by pickup zone, for choosing where to wait or cruise</p>
   </div>
-  <button id="themeBtn" title="Switch between light and dark">Light / dark</button>
+  <div class="hbtns">
+    <button id="dataBtn" title="Download and load TLC taxi months and NYC DOT traffic days">Data</button>
+    <button id="themeBtn" title="Switch between light and dark">Light / dark</button>
+  </div>
 </div></header>
+
+<dialog id="dataDlg" aria-labelledby="dataH">
+  <form method="dialog" class="dhead"><h2 id="dataH">Load data</h2><button>Close</button></form>
+  <p class="note" id="dataLoaded"></p>
+  <h3>Taxi months (TLC yellow cab)</h3>
+  <p class="note">Ticked months are what the dashboard will show. Tick a month to add it, untick to remove it. Dotted months are already downloaded, so they load without a download. TLC publishes each month about two months late.</p>
+  <div id="dataMonths"></div>
+  <h3>Traffic speeds (NYC DOT)</h3>
+  <p class="note">Every day in the range is downloaded once (about 0.25 MB each) and kept. Days DOT has no data for are skipped.</p>
+  <div class="pair"><input type="date" id="trFrom" aria-label="Traffic from"> to <input type="date" id="trTo" aria-label="Traffic to"></div>
+  <div class="chips presets" id="trPresets"></div>
+  <p class="note est" id="dataEst"></p>
+  <div class="pair"><button id="dataGo" class="primary" type="button">Download and load</button><button id="dataCancel" type="button" hidden>Cancel</button></div>
+  <div id="dataJob" hidden>
+    <ol class="stages" id="dataStages"></ol>
+    <p id="dataMsg" role="status"></p>
+    <details><summary>Log</summary><pre id="dataLog"></pre></details>
+  </div>
+</dialog>
 <div class="wrap">
 
 <section class="filters card" aria-label="Shift filters">

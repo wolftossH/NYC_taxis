@@ -29,9 +29,10 @@ Team project; the spec is `Project document.pdf` (metric definitions in its Appe
 - System Python is `C:\HuyTrinh\Anaconda\python.exe`; `python` on PATH is the Store stub. Node is not installed.
 - uvicorn runs without `--reload`: restart the server after any backend change. An old server still serves the new
   frontend from disk, so new endpoints just 404 (this caused the "map click does nothing" bug).
-- Loaded data: Jan-Sep 2026 (31.6M trips, 273 days) + DOT traffic 2026-08-01 to 2026-11-15 (106 days; DOT has none
-  for 10-12). `clean_handoff_2026-01_to_2026-09` was made by streaming the Jan-May and Jun-Sep handoffs' taxi_trips into
-  one file (running all 9 months through the notebook at once risks running out of RAM). The backend reads the most recently written
+- Loaded data: Jan 2025 - Sep 2026 (75.3M trips, 21 months) + DOT traffic 2026-08-01 to 2026-11-17 (108 days; DOT
+  has none for 10-12), all in the single folder `clean_handoff_2025-01_to_2026-09` (2025 was added via the Data panel).
+  Don't run many months through the notebook at once (RAM); the Data panel fetches only new months and stream-merges
+  them. The backend reads the most recently written
   `data/taxi_clean_data/clean_handoff_*` folder. Delete `data/cube.parquet`, `data/od.parquet`,
   `data/traffic_hourly.parquet` and restart the server after fetching new data (rebuild takes ~40 s). `Store` also
   rebuilds by itself when the cached cube lacks any column in `cube.SUMS` or the traffic cache lacks `speed_sum`, so
@@ -54,6 +55,18 @@ Team project; the spec is `Project document.pdf` (metric definitions in its Appe
 - `backend/cube.py` - builds and queries the aggregates. `backend/main.py` - FastAPI routes
   (`/api/meta`, `/api/zones`, `/api/basemap`, `/api/summary`, `/api/timeseries`, `/api/od`) and serves `frontend/` at `/`.
 - `backend/zones.py` - downloads/caches the zone polygons from NYC Open Data (WGS84).
+- `backend/datajobs.py` - the header "Data" panel (`/api/data/*`, deep link `/?panel=data`). One background job:
+  DOT `count(*)` per uncached traffic day (0-row days are skipped; the notebook aborts on them) -> `fetch_data.py`
+  for ONLY months not yet loaded (traffic-only: one cached month, its trips discarded), 3 attempts -> streamed merge of
+  the current handoff's still-wanted months + the batch into `clean_handoff_<first>_to_<last>` (via `.tmp`/`.old`
+  folders, which `cube._find` ignores) -> `cube.build()` -> new `Store` swapped into `main.store` (no restart).
+  On error/cancel the old handoff's files are re-touched so it stays newest. Cancel kills the process tree; the
+  rebuild stage can't be cancelled. The rebuild runs while the old Store is in memory (needs spare RAM).
+  After a successful swap, `_prune_handoffs` deletes every other `clean_handoff_*` folder (raw/ is never touched),
+  so only the in-use handoff exists.
+- `data/cache_source.json` records which handoff (name + trips/traffic file sizes) the three caches were built from;
+  `build()` writes it last. `Store` rebuilds when it is missing or doesn't match the newest handoff, so an interrupted
+  rebuild or a newer handoff never leaves stale caches being served.
 - `backend/basemap.py` - map backdrop: land outside NYC from Census cartographic counties (shoreline-clipped), read with
   stdlib only and cached as `data/basemap.geojson` (`/api/basemap`). Water is just the map background. Delete the cache
   to rebuild; if the download fails the map still works with plain water.

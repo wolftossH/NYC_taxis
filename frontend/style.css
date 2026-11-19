@@ -154,3 +154,39 @@ footer p { margin:0 0 8px; }
 .mapctl { position:absolute; top:6px; right:6px; display:flex; flex-direction:column; gap:4px; }
 .mapctl button { min-width:34px; height:32px; padding:0 8px; font-weight:600; background:var(--surface); }
 .mapctl button:hover { background:var(--grid); }
+
+/* Data panel (header "Data" button -> dialog) */
+.hbtns { display:flex; gap:8px; }
+#dataBtn { background:transparent; color:var(--brand-ink); border-color:rgba(20,24,29,.45); }
+#dataBtn:hover { background:rgba(20,24,29,.12); }
+#dataDlg { width:min(760px, calc(100% - 32px)); max-height:calc(100% - 32px); border:0; border-radius:8px; padding:20px;
+  background:var(--surface); color:var(--ink); box-shadow:0 12px 40px rgba(0,0,0,.35); }
+#dataDlg::backdrop { background:rgba(0,0,0,.45); }
+#dataDlg h3 { margin-top:18px; }
+#dataDlg .note { max-width:none; }
+.mrow { display:flex; align-items:center; gap:10px; margin:4px 0; }
+.mrow .yr { width:40px; flex:none; font-weight:650; font-variant-numeric:tabular-nums; color:var(--ink2); }
+.mrow .chips { gap:4px; }
+.mrow button { min-width:46px; padding:4px 6px; position:relative; }
+.mrow button:disabled { opacity:.35; cursor:not-allowed; }
+.mrow button.cached::after { content:""; position:absolute; top:3px; right:3px; width:5px; height:5px; border-radius:50%; background:var(--s1); }
+.mrow button.on.cached::after { background:var(--surface); }
+button.primary { background:var(--ink); color:var(--surface); border-color:var(--ink); font-weight:650; }
+button.primary:hover { background:var(--ink2); }
+button:disabled { opacity:.45; cursor:not-allowed; }
+.est { margin-top:16px; }
+.muted { color:var(--muted); }
+.warn { color:#c0392b; font-weight:600; }
+:root[data-theme="dark"] .warn { color:#f08a7a; }
+@media (prefers-color-scheme: dark) { :root:where(:not([data-theme="light"])) .warn { color:#f08a7a; } }
+.stages { list-style:none; padding:0; margin:16px 0 6px; font-size:14px; }
+.stages li { padding:4px 0 4px 26px; position:relative; color:var(--muted); }
+.stages li::before { content:""; position:absolute; left:4px; top:9px; width:12px; height:12px; border-radius:50%; border:2px solid var(--axis); }
+.stages li.done { color:var(--ink2); } .stages li.done::before { background:var(--s1); border-color:var(--s1); }
+.stages li.active { color:var(--ink); font-weight:600; }
+.stages li.active::before { border-color:var(--s1); border-right-color:transparent; animation:spin 1s linear infinite; }
+.stages li.failed { color:var(--ink); } .stages li.failed::before { background:#d03b3b; border-color:#d03b3b; }
+.stages li .muted { font-weight:400; }
+@keyframes spin { to { transform:rotate(360deg); } }
+#dataLog { max-height:220px; overflow:auto; font-size:12px; background:var(--page); padding:8px; border-radius:4px; white-space:pre-wrap; }
+@media (max-width:560px) { #dataDlg { padding:14px; } .mrow { align-items:flex-start; } .mrow .yr { padding-top:5px; } .mrow button { min-width:40px; } }

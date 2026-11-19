@@ -50,7 +50,7 @@ source .venv/bin/activate
 ```
 
 - Your prompt now starts with `(.venv)`. From here on, `python` and `pip` refer to the project environment.
-- Activate it again in every new terminal before Steps 4-8.
+- Activate it again in every new terminal before Steps 4-9.
 - If PowerShell blocks the script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again.
 - Run `deactivate` to leave the environment.
 
@@ -60,7 +60,16 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Step 5. Download and clean the data
+### Step 5. Download and clean a first month
+
+The server needs at least one cleaned folder before it can start, so the first load is done on the command line.
+Start small: one month is enough. You add more months and traffic days from the dashboard in Step 8.
+
+```
+python scripts/fetch_data.py 2026-09 2026-09-15
+```
+
+The general form is:
 
 ```
 python scripts/fetch_data.py [MONTHS] [TRAFFIC-DAYS]
@@ -105,8 +114,11 @@ taxi data:
 python scripts/fetch_data.py 2026-06,2026-07,2026-08,2026-09 2026-06-01:2026-09-30
 ```
 
-After any fetch, follow "Load different months or traffic days" under [Common tasks](#common-tasks) so the server rebuilds its
-aggregates.
+Large lists like Examples A and B run every month through the notebook at once and need a lot of RAM. Prefer
+loading one month here and adding the rest in Step 8, which cleans only new months and merges them.
+
+If the server is already running when you fetch on the command line, follow "Load different months or traffic
+days (command line)" under [Common tasks](#common-tasks) so the server rebuilds its aggregates.
 
 ### Step 6. Start the server
 
@@ -121,7 +133,24 @@ The first start takes longer. The backend builds `data/cube.parquet`, `data/od.p
 
 Go to http://localhost:8000.
 
-### Step 8 (optional). Verify the aggregates
+### Step 8. Load more months and traffic days from the dashboard
+
+With the server running:
+
+1. Click **Data** in the yellow header (or open http://localhost:8000/?panel=data).
+2. Tick the taxi months you want shown. Ticked months are the result: tick to add a month, untick to remove one.
+   Months with a dot are already downloaded; greyed-out months are not published by TLC yet.
+3. Set the traffic range (from/to, up to yesterday). The presets fill in the loaded range, the taxi months' range
+   or "up to yesterday".
+4. Check the summary line (what will be added, removed and downloaded, and free disk), then click
+   **Download and load**.
+5. Wait for the panel to finish. It shows each stage (check traffic days, download and clean, merge, rebuild) with
+   live counts and a log. You can close it while it runs; the header button reads "Data · loading…".
+
+The dashboard keeps showing the current data until the new data is ready, then refreshes by itself. No server
+restart is needed. Each new month adds about 120 MB on disk (raw plus cleaned), so watch the free-disk figure.
+
+### Step 9 (optional). Verify the aggregates
 
 In a second terminal, activate the environment (Step 3) and run:
 
@@ -129,13 +158,30 @@ In a second terminal, activate the environment (Step 3) and run:
 python scripts/check_cube.py
 ```
 
-It compares cube totals against the raw parquet and must print `OK`.
+It compares cube totals against the raw parquet and must print `OK`. Don't run it while a data load is rebuilding.
 
 ## Common tasks
 
 Activate the environment first (Step 3) if this is a new terminal.
 
-**Load different months or traffic days**
+**Load data from the dashboard (easiest)**
+
+Follow [Step 8](#step-8-load-more-months-and-traffic-days-from-the-dashboard). The same panel also removes months:
+untick them and click **Download and load**.
+
+What it does for you:
+
+- Downloads and cleans **only new months** (through `scripts/fetch_data.py`) and merges them with the months
+  already loaded, so nothing is re-cleaned and memory use stays low.
+- Asks DOT which days have no traffic data and skips them (for example 2026-10-12), instead of failing.
+- Retries the download up to 3 times; cached files make each retry resume.
+- If anything fails or you cancel, the previous data stays loaded.
+- After a successful load it deletes the older `clean_handoff_*` folders, so only the one in use is kept. Raw
+  downloads in `raw/tlc` and `raw/traffic` are kept, so a removed month reloads without downloading again.
+
+The command line below still works and does the same as the panel.
+
+**Load different months or traffic days (command line)**
 
 1. Stop the server (Ctrl+C).
 2. Run Step 5 with every month and the whole traffic range you want (see the examples there).
@@ -158,6 +204,7 @@ Frontend files are static and only need a browser refresh.
 | `backend/cube.py` | Builds the aggregates and recomputes rates for a selected period. |
 | `backend/main.py` | FastAPI routes. Also serves `frontend/` at `/`. |
 | `backend/zones.py` | Downloads and caches zone polygons (WGS84). |
+| `backend/datajobs.py` | The dashboard's data panel: runs a background load (DOT day check, fetch, merge, rebuild) and swaps in the new data. |
 | `frontend/` | Static HTML, JS and CSS with no build step. D3, Observable Plot and Vega-Lite load from pinned CDN versions. |
 | `taxi_data_model.html`, `taxi_database_design.html` | Design documents for the data model and a Postgres schema. |
 | `data/` | Gitignored: raw and cleaned parquet, aggregates, zone GeoJSON. |
@@ -194,6 +241,10 @@ Cleaning keeps trips that:
 | `GET /api/summary` | Per-zone metrics and Pareto flags for `start`, `end`, `weekdays`, time window and `min_trips` (default 30). |
 | `GET /api/timeseries` | 15-minute, weekday and traffic series for the same filters (`traffic`: speed and earning rate per slot on the selected days that have traffic data, limited to the zone's borough when `zone` is set). |
 | `GET /api/od` | Destination breakdown for one pickup `zone`. |
+| `GET /api/data/status` | Loaded months and traffic days, cached raw files, free disk and the state of the data-load job. |
+| `GET /api/data/available` | TLC months published since 2024-01 (checked once an hour). |
+| `POST /api/data/fetch` | Start a data load: `{"months": [...], "traffic_from": "YYYY-MM-DD", "traffic_to": "YYYY-MM-DD"}`. 202, 409 if one is running, 422 on bad input. |
+| `POST /api/data/cancel` | Cancel the running data load. |
 
 ## Metrics
 

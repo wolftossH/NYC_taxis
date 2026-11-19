@@ -1,11 +1,12 @@
 from datetime import date
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from . import cube
+from . import cube, datajobs
 from .basemap import load_basemap
 from .zones import load_zones
 
@@ -85,6 +86,47 @@ def od(zone: int, start: date, end: date, weekdays: str = "0,1,2,3,4,5,6",
        slot_from: int | None = SlotFrom, slot_to: int | None = SlotTo,
        hour_from: int | None = HourFrom, hour_to: int | None = HourTo):
     return cube.destinations(store, zone, start, end, _wd(weekdays), *_slots(slot_from, slot_to, hour_from, hour_to))
+
+
+# --- data panel: load TLC months / DOT traffic days from the UI (backend/datajobs.py) ---
+
+class FetchRequest(BaseModel):
+    months: list[str]
+    traffic_from: str
+    traffic_to: str
+
+
+def _swap(new_store: cube.Store) -> None:
+    global store  # routes read the module-level store, so the old data serves until this line
+    store = new_store
+
+
+@app.get("/api/data/status")
+def data_status():
+    m = store.meta()
+    return datajobs.status({k: m[k] for k in ("months", "min_date", "max_date", "traffic_dates", "traffic_missing",
+                                              "trips")})
+
+
+@app.get("/api/data/available")
+def data_available():
+    return {"months": datajobs.available_months()}
+
+
+@app.post("/api/data/fetch", status_code=202)
+def data_fetch(req: FetchRequest):
+    try:
+        datajobs.start(req.months, req.traffic_from, req.traffic_to, store.meta(), _swap)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/data/cancel")
+def data_cancel():
+    return {"cancelled": datajobs.cancel()}
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).resolve().parents[1] / "frontend", html=True),

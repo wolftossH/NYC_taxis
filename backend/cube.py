@@ -7,6 +7,7 @@ Only additive quantities (counts, sums, occupied minutes) are stored. Rates are
 recomputed from summed numerators/denominators for whatever period is selected,
 so aggregation is consistent across time windows.
 """
+import json
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,7 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 CUBE = DATA / "cube.parquet"
 TRAFFIC = DATA / "traffic_hourly.parquet"
 OD = DATA / "od.parquet"
+SOURCE = DATA / "cache_source.json"  # which handoff the three caches above were built from
 SUMS = ["trips", "fare_sum", "tip_sum", "tolls_sum", "minutes_sum", "card_trips", "good_tip_trips",
         "card_fare_sum", "card_tip_sum", "dropoffs", "do_card_trips", "do_good_tip_trips"]
 SLOTS = 96
@@ -28,7 +30,9 @@ def _slot(t: pd.Series) -> pd.Series:
 
 def _find(name: str) -> Path:
     # newest handoff wins (folder names sort by first month, not by recency)
-    hits = sorted((DATA / "taxi_clean_data").glob(f"clean_handoff_*/{name}"), key=lambda p: p.stat().st_mtime)
+    # .tmp/.old are the data panel's working folders (backend/datajobs.py), never a finished handoff
+    hits = sorted((p for p in (DATA / "taxi_clean_data").glob(f"clean_handoff_*/{name}")
+                   if not p.parent.name.endswith((".tmp", ".old"))), key=lambda p: p.stat().st_mtime)
     if not hits:
         raise FileNotFoundError(f"{name} not found; run scripts/fetch_data.py first")
     return hits[-1]
@@ -36,7 +40,8 @@ def _find(name: str) -> Path:
 
 def build() -> None:
     parts, do_parts, od_parts = [], [], []
-    for batch in pq.ParquetFile(_find("taxi_trips.parquet")).iter_batches(batch_size=500_000):
+    src = _find("taxi_trips.parquet")
+    for batch in pq.ParquetFile(src).iter_batches(batch_size=500_000):
         d = batch.to_pandas()
         pu = pd.to_datetime(d["tpep_pickup_datetime"])
         do = pd.to_datetime(d["tpep_dropoff_datetime"])
@@ -82,14 +87,30 @@ def build() -> None:
     t.groupby(["date", "slot", "borough"], as_index=False).agg(
         speed_sum=("speed", "sum"), n=("speed", "size")
     ).to_parquet(TRAFFIC, index=False)
+    # written last: if a build is interrupted, the record is missing/old and the next start rebuilds
+    SOURCE.write_text(json.dumps(_source_id(src)), encoding="utf8")
+
+
+def _source_id(trips: Path) -> dict:
+    # name + file sizes, not mtimes: datajobs re-touches the old handoff after a failed load to keep it newest
+    traffic = trips.parent / "traffic_observations.parquet"
+    return {"handoff": trips.parent.name, "trips_bytes": trips.stat().st_size,
+            "traffic_bytes": traffic.stat().st_size if traffic.exists() else 0}
+
+
+def _cache_matches_handoff() -> bool:
+    try:
+        return json.loads(SOURCE.read_text(encoding="utf8")) == _source_id(_find("taxi_trips.parquet"))
+    except (OSError, ValueError):
+        return False
 
 
 class Store:
     def __init__(self):
         stale = (CUBE.exists() and not {"date", "slot", "zone", *SUMS} <= set(pq.read_schema(CUBE).names)) or (
             TRAFFIC.exists() and "speed_sum" not in pq.read_schema(TRAFFIC).names)
-        if stale or not CUBE.exists() or not TRAFFIC.exists() or not OD.exists():
-            build()  # missing, or a cache built before a column was added
+        if stale or not CUBE.exists() or not TRAFFIC.exists() or not OD.exists() or not _cache_matches_handoff():
+            build()  # missing, built before a column was added, or built from another/older handoff
         od = pd.read_parquet(OD)
         self.od_by_pu = {k: g.drop(columns="pu") for k, g in od.groupby("pu")}
         self.cube = pd.read_parquet(CUBE)
@@ -97,8 +118,14 @@ class Store:
 
     def meta(self) -> dict:
         c = self.cube
-        return {"min_date": str(c.date.min().date()), "max_date": str(c.date.max().date()),
-                "traffic_dates": sorted({str(d.date()) for d in self.traffic.date}),
+        days = pd.DatetimeIndex(c.date.unique())
+        tdays = pd.DatetimeIndex(self.traffic.date.unique()).sort_values()
+        gaps = (pd.date_range(tdays.min(), tdays.max()).difference(tdays) if len(tdays)
+                else pd.DatetimeIndex([]))
+        return {"min_date": str(days.min().date()), "max_date": str(days.max().date()),
+                "months": sorted(set(days.strftime("%Y-%m"))),
+                "traffic_dates": [str(d.date()) for d in tdays],
+                "traffic_missing": [str(d.date()) for d in gaps],  # gaps inside the loaded traffic range
                 "trips": int(c.trips.sum())}
 
     def select(self, start, end, weekdays, slot_from, slot_to, *, all_slots=False, all_weekdays=False):
