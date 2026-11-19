@@ -27,9 +27,9 @@
   <div class="grp"><span>Days</span>
     <div class="chips" id="dayPresets"></div>
     <div id="weekdays" class="chips"></div></div>
-  <div class="grp"><span>Time of day (pickup hour)</span>
+  <div class="grp"><span>Time of day (pickup time)</span>
     <div class="chips" id="hourPresets"></div>
-    <div class="pair"><input type="number" id="h0" min="0" max="23" value="0" aria-label="From hour"> to <input type="number" id="h1" min="0" max="23" value="23" aria-label="To hour"> <span class="hint" id="hourHint">24-hour clock</span></div></div>
+    <div class="pair"><input type="time" id="t0" step="900" value="00:00" aria-label="From time"> to <input type="time" id="t1" step="900" value="00:00" aria-label="Until time"> <span class="hint" id="hourHint">15-min steps; an end of midnight means the whole evening</span></div></div>
   <div class="grp"><span>Dates</span>
     <div class="pair"><input type="date" id="start" aria-label="From date"> to <input type="date" id="end" aria-label="To date"></div>
     <div class="chips presets" id="presets"></div></div>
@@ -43,7 +43,7 @@
 <section class="main">
   <aside class="card" aria-labelledby="pickH">
     <h2 id="pickH">Best zones for this shift</h2>
-    <p class="note">Pareto-efficient zones: no other zone has both more pickups and a higher fare+tip rate. Ordered by attractiveness, which balances the two.</p>
+    <p class="note">Pareto-efficient zones: no other zone has both more pickups and a higher earning rate (fare + tip − tolls per minute). Ordered by attractiveness, which balances the two.</p>
     <ol class="picks" id="picks"></ol>
   </aside>
   <div class="card">
@@ -65,8 +65,10 @@
 </section>
 
 <section class="row3">
-  <div class="card"><h2>Fare + tip per occupied minute, by hour</h2><div id="vRate"></div></div>
-  <div class="card"><h2>Avg occupied duration, by hour</h2><div id="vDur"></div></div>
+  <div class="card"><h2>Pickups and dropoffs per day, by time of day</h2>
+    <p class="note" id="flowKey"></p><div id="vFlow"></div></div>
+  <div class="card"><h2>Fare + tip − tolls per occupied minute, by time of day</h2><div id="vRate"></div></div>
+  <div class="card"><h2>Avg occupied duration, by time of day</h2><div id="vDur"></div></div>
   <div class="card"><h2>Pickups per day, by weekday</h2><div id="vWeekday"></div></div>
   <div class="card"><h2>Earning rate vs. traffic speed (indexed)</h2>
     <p class="note" id="idxKey"></p><div id="vTraffic"></div>
@@ -76,8 +78,8 @@
 <div id="tip" class="tip" hidden></div>
 <p id="err" class="err" role="alert" hidden></p>
 <footer>
-  <p><b>How the numbers work.</b> Pickups per day = pickups ÷ selected days. Fare+tip rate = (base fares + recorded tips) ÷ occupied minutes, so it excludes operating costs and empty driving. Card tipping = card trips with a tip over 20% of the fare ÷ card trips (cash tips are not recorded). Destination % = trips from the zone to a destination ÷ all selected trips leaving the zone. All rates are recomputed from summed totals for the selected period.</p>
-  <p><b>Limits.</b> This is history, not a live forecast. Zones with few trips are greyed out. Traffic covers one day and is chosen independently of the taxi dates.</p>
+  <p><b>How the numbers work.</b> Pickups per day = pickups ÷ selected days. Earning rate (profitability index) = (base fares + recorded tips − tolls) ÷ occupied minutes, so it excludes operating costs and empty driving. Card tipping = card trips with a tip over 20% of the fare ÷ card trips (cash tips are not recorded), by pickup zone or, for the dropoff version, by the zone and time where the trip ends. Avg card tip = card tips ÷ card fares. Dropoffs per day = trips ending in the zone during the selected time of day ÷ selected days; pickups per dropoff = pickups ÷ dropoffs, so above 1 means more fares start in the zone than end there. Destination % (origin–destination probability) = trips from the zone to a destination ÷ all selected trips leaving the zone; the top 10 are listed. All rates are recomputed from summed totals for the selected period.</p>
+  <p><b>Limits.</b> This is history, not a live forecast. Zones with few trips are greyed out; short time windows (15 minutes) hold few trips, so raise the minimum or widen the window when a result looks noisy. Traffic speeds (NYC DOT) start on 2026-08-01, with no data for 2026-10-12. The indexed chart compares earning rate and traffic on the selected days that have both; when none do, it compares daily shapes from different days and says so. Traffic is a borough roll-up of road links, not mapped to taxi zones.</p>
 </footer>
 </div>
 <script src="app.js"></script>

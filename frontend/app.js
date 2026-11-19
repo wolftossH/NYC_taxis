@@ -3,10 +3,23 @@ const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const METRICS = {
   attractiveness: { label: "Attractiveness index", fmt: d3.format(".0f") },
   pickups_per_day: { label: "Pickups per day", fmt: d3.format(",.0f") },
-  rate: { label: "Fare + tip per occupied min", fmt: d3.format("$.2f") },
+  rate: { label: "Fare + tip − tolls per occupied min", fmt: d3.format("$.2f") },
   avg_duration: { label: "Avg occupied duration (min)", fmt: d3.format(".1f") },
-  tip_rate: { label: "Good-tip trips, card only (%)", fmt: d3.format(".0f") },
+  tip_rate: { label: "Good-tip trips by pickup zone, card (%)", fmt: d3.format(".0f") },
+  do_tip_rate: { label: "Good-tip trips by dropoff zone, card (%)", fmt: d3.format(".0f") },
+  card_tip_pct: { label: "Avg card tip (% of fare)", fmt: d3.format(".1f") },
+  dropoffs_per_day: { label: "Dropoffs per day", fmt: d3.format(",.0f") },
+  pickups_per_dropoff: { label: "Pickups per dropoff", fmt: d3.format(".2f") },
+  od_prob: { label: "Origin–destination probability from the selected zone (%)", fmt: d3.format(".2f") },
 };
+/* OD probability (%) of each destination for the selected pickup zone, or null when there is none to show. */
+const odProbs = () => (state.zone && od && !od.error && od.total && od.all
+  ? new Map(od.all.map((d) => [d.zone, 100 * d.prob])) : null);
+/* Time of day = 15-minute slots 0-95, inclusive range s0..s1. The UI shows "from" and an exclusive "to" time. */
+const SLOTS = 96;
+const hhmm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const toMin = (v) => { const [h, m] = String(v).split(":").map(Number); return Number.isFinite(h) ? h * 60 + (m || 0) : null; };
+const slotLabel = (t) => hhmm(Math.round(t * 60)); // t in hours (slot / 4)
 const THIN = 10; // pickups/day below which a zone's rate rests on a small sample
 const $ = (id) => document.getElementById(id);
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -14,10 +27,10 @@ const isDark = () => {
   const t = document.documentElement.dataset.theme;
   return t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
 };
-const state = { start: "", end: "", weekdays: new Set([0, 1, 2, 3, 4, 5, 6]), h0: 0, h1: 23,
+const state = { start: "", end: "", weekdays: new Set([0, 1, 2, 3, 4, 5, 6]), s0: 0, s1: SLOTS - 1,
   minTrips: 30, metric: "attractiveness", zone: null, compare: null };
 let od = null;
-let hourBtns = [];
+let timeBtns = [];
 let zones, basemap, byId = new Map(), summary, series, meta, paths;
 
 /* Backdrop labels: [text, lon, lat, kind, rotation in degrees]. Water in italics, land in small caps. */
@@ -48,7 +61,7 @@ async function getJSON(url) {
 }
 
 const query = () => new URLSearchParams({ start: state.start, end: state.end,
-  weekdays: [...state.weekdays].sort().join(","), hour_from: state.h0, hour_to: state.h1, min_trips: state.minTrips });
+  weekdays: [...state.weekdays].sort().join(","), slot_from: state.s0, slot_to: state.s1, min_trips: state.minTrips });
 
 async function init() {
   // The land backdrop is decoration: an older server without /api/basemap just gets plain water.
@@ -59,7 +72,6 @@ async function init() {
   $("start").min = $("end").min = meta.min_date; $("start").max = $("end").max = meta.max_date;
   $("start").value = state.start; $("end").value = state.end;
   $("sub").textContent = `${meta.trips.toLocaleString()} trips, ${meta.min_date} to ${meta.max_date}`;
-  $("trafficNote").textContent = `Traffic data covers ${meta.traffic_dates.join(", ")} only and is selected independently of the taxi dates: this compares daily patterns, not a same-day match.`;
 
   const addDays = (iso, n) => new Date(Date.parse(iso) + n * 864e5).toISOString().slice(0, 10);
   const setRange = (a, b) => { state.start = $("start").value = a < meta.min_date ? meta.min_date : a; state.end = $("end").value = b; refresh(); };
@@ -83,36 +95,55 @@ async function init() {
   [["Every day", [0, 1, 2, 3, 4, 5, 6]], ["Weekdays", [0, 1, 2, 3, 4]], ["Weekends", [5, 6]]].forEach(([t, days]) =>
     $("dayPresets").append(el("button", { textContent: t, type: "button", onclick: () => { state.weekdays = new Set(days); syncDays(); refresh(); } })));
   syncDays();
-  hourBtns = [["Morning rush", 6, 9], ["Midday", 10, 15], ["Evening rush", 16, 19], ["Late night", 20, 23], ["Overnight", 0, 5], ["All day", 0, 23]]
+  // Presets in whole hours: [label, from hour, to hour (exclusive)]
+  timeBtns = [["Morning rush", 6, 10], ["Midday", 10, 16], ["Evening rush", 16, 20], ["Late night", 20, 24], ["Overnight", 0, 6], ["All day", 0, 24]]
     .map(([t, a, b]) => {
-      const btn = el("button", { textContent: t, type: "button", title: `${a}:00 to ${b}:59` });
-      btn.dataset.a = a; btn.dataset.b = b;
-      btn.onclick = () => { state.h0 = $("h0").value = a; state.h1 = $("h1").value = b; refresh(); };
+      const btn = el("button", { textContent: t, type: "button", title: `${hhmm(a * 60)} to ${hhmm(b * 60)}` });
+      btn.dataset.a = a * 4; btn.dataset.b = b * 4 - 1;
+      btn.onclick = () => setSlots(a * 4, b * 4 - 1);
       $("hourPresets").append(btn); return btn;
     });
   for (const [k, m] of Object.entries(METRICS)) $("metric").add(new Option(m.label, k));
   const bind = (id, key, num) => $(id).addEventListener("change", (e) => {
     state[key] = num ? +e.target.value : e.target.value; refresh();
   });
-  bind("start", "start"); bind("end", "end"); bind("h0", "h0", 1); bind("h1", "h1", 1);
+  bind("start", "start"); bind("end", "end");
   bind("minTrips", "minTrips", 1); bind("metric", "metric");
-  // Optional deep link: ?zone=161&compare=236&h0=16&h1=19
+  // "To" is exclusive; 00:00 as the end means midnight. Times snap down to the 15-minute grid.
+  const readTimes = () => {
+    const a = toMin($("t0").value), b = toMin($("t1").value);
+    if (a == null || b == null) return;
+    setSlots(Math.floor(a / 15), (b === 0 ? 1440 : Math.ceil(b / 15) * 15) / 15 - 1);
+  };
+  $("t0").addEventListener("change", readTimes); $("t1").addEventListener("change", readTimes);
+  // Optional deep link: ?zone=161&compare=236&t0=16:00&t1=20:00 (old h0=16&h1=19 still works)
   const url = new URLSearchParams(location.search);
   if (url.get("zone")) state.zone = +url.get("zone");
   if (url.get("compare")) state.compare = +url.get("compare");
-  if (url.get("h0")) state.h0 = $("h0").value = +url.get("h0");
-  if (url.get("h1")) state.h1 = $("h1").value = +url.get("h1");
+  if (METRICS[url.get("metric")]) { state.metric = url.get("metric"); $("metric").value = state.metric; }
+  if (url.get("h0")) state.s0 = 4 * +url.get("h0");
+  if (url.get("h1")) state.s1 = 4 * +url.get("h1") + 3;
+  if (url.get("t0") && toMin(url.get("t0")) != null) state.s0 = Math.floor(toMin(url.get("t0")) / 15);
+  if (url.get("t1") && toMin(url.get("t1")) != null) state.s1 = (toMin(url.get("t1")) || 1440) / 15 - 1;
+  setSlots(state.s0, state.s1, false);
   $("themeBtn").onclick = () => { document.documentElement.dataset.theme = isDark() ? "light" : "dark"; render(); };
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render());
   buildMap();
   await refresh();
 }
 
+function setSlots(a, b, go = true) {
+  a = Math.max(0, Math.min(SLOTS - 1, Math.floor(a))); b = Math.max(0, Math.min(SLOTS - 1, Math.floor(b)));
+  if (a > b) [a, b] = [b, a];
+  state.s0 = a; state.s1 = b;
+  $("t0").value = hhmm(a * 15); $("t1").value = hhmm((b + 1) * 15);
+  if (go) refresh();
+}
+
 let token = 0;
 async function refresh() {
-  if (state.h0 > state.h1) { [state.h0, state.h1] = [state.h1, state.h0]; $("h0").value = state.h0; $("h1").value = state.h1; }
   if (state.start > state.end) return;
-  hourBtns.forEach((b) => b.classList.toggle("on", +b.dataset.a === state.h0 && +b.dataset.b === state.h1));
+  timeBtns.forEach((b) => b.classList.toggle("on", +b.dataset.a === state.s0 && +b.dataset.b === state.s1));
   const me = ++token, q = query();
   const sq = new URLSearchParams(q); sq.delete("min_trips"); if (state.zone) sq.set("zone", state.zone);
   document.body.classList.add("loading"); // keep the previous frame, dimmed
@@ -147,9 +178,12 @@ function renderStats() {
   const items = [
     ["Showing", state.zone ? `${zname(state.zone)} (${byId.get(state.zone)?.borough})` : "All zones", "", 17],
     ["Pickups per day", z ? METRICS.pickups_per_day.fmt(z.pickups_per_day) : "–", `over ${summary.n_days} day(s)`],
-    ["Fare + tip per occupied min", z?.rate != null ? METRICS.rate.fmt(z.rate) : "–", "recorded card tips only"],
+    ["Fare + tip − tolls per min", z?.rate != null ? METRICS.rate.fmt(z.rate) : "–", "per occupied minute"],
     ["Avg occupied duration", z?.avg_duration != null ? METRICS.avg_duration.fmt(z.avg_duration) + " min" : "–", "per trip"],
-    ["Card tips over 20%", z?.tip_rate != null ? METRICS.tip_rate.fmt(z.tip_rate) + "%" : "–", "of card trips"],
+    ["Card tips over 20%", z?.tip_rate != null ? METRICS.tip_rate.fmt(z.tip_rate) + "%" : "–",
+      z?.card_tip_pct != null ? `of card trips; avg tip ${METRICS.card_tip_pct.fmt(z.card_tip_pct)}% of fare` : "of card trips"],
+    ["Dropoffs per day", z?.dropoffs_per_day != null ? METRICS.dropoffs_per_day.fmt(z.dropoffs_per_day) : "–",
+      state.zone ? (z?.pickups_per_dropoff != null ? `${METRICS.pickups_per_dropoff.fmt(z.pickups_per_dropoff)} pickups per dropoff` : "no dropoffs") : "by dropoff time"],
   ];
   $("stats").replaceChildren(...items.map(([l, v, s, fs]) => el("div", { className: "stat" + (fs ? " pick" : "") },
     el("div", { className: "l", textContent: l }),
@@ -208,23 +242,37 @@ function buildMap() {
 
 function renderMap() {
   const m = METRICS[state.metric], rows = rowOf(), interp = ramp();
-  $("mapTitle").textContent = `${m.label} by pickup zone`;
-  $("mapNote").textContent = "Click a zone to select it. Drag to move the map; zoom with Ctrl + scroll, a pinch or the buttons.";
-  const vals = summary.zones.filter((z) => z.eligible && z[state.metric] != null).map((z) => z[state.metric]);
+  const odMode = state.metric === "od_prob", probs = odMode ? odProbs() : null;
+  $("mapTitle").textContent = odMode ? (state.zone ? `Origin–destination probability: where trips from ${zname(state.zone)} end`
+    : "Origin–destination probability") : `${m.label} by zone`;
+  $("mapNote").textContent = (odMode && !state.zone ? "Click a pickup zone to colour every zone by the share of its trips that end there. "
+    : "Click a zone to select it. ") + "Drag to move the map; zoom with Ctrl + scroll, a pinch or the buttons.";
+  const vals = odMode ? [...(probs?.values() ?? [])]
+    : summary.zones.filter((z) => z.eligible && z[state.metric] != null).map((z) => z[state.metric]);
   const q = vals.length ? d3.scaleQuantile().domain(vals).range(d3.range(7).map((i) => interp(i / 6))) : null;
-  const val = (d) => { const r = rows.get(d.properties.LocationID); return r?.eligible && r[state.metric] != null ? r[state.metric] : null; };
+  const val = (d) => {
+    const id = d.properties.LocationID;
+    if (odMode) return probs?.get(id) ?? null;
+    const r = rows.get(id); return r?.eligible && r[state.metric] != null ? r[state.metric] : null;
+  };
   paths.style("fill", (d) => { const v = val(d); return v == null || !q ? css("--none") : q(v); })
-    .classed("pareto", (d) => !!rows.get(d.properties.LocationID)?.pareto)
+    .classed("pareto", (d) => !odMode && !!rows.get(d.properties.LocationID)?.pareto)
     .classed("sel", (d) => d.properties.LocationID === state.zone);
   paths.filter(".pareto").raise(); paths.filter(".sel").raise();
   const lg = $("legend");
-  if (!vals.length) { lg.textContent = "No zones meet the minimum trip count."; return; }
+  if (!vals.length) {
+    lg.textContent = odMode ? (state.zone ? "No trips left the selected zone in this period." : "Select a pickup zone to see where its trips end.")
+      : "No zones meet the minimum trip count.";
+    return;
+  }
   // Stepped legend: one block per map class, labelled at the class boundaries.
   const colors = q.range(), cuts = [d3.min(vals), ...q.quantiles(), d3.max(vals)];
   lg.replaceChildren(
     el("div", { className: "steps" }, ...colors.map((c, i) => el("i", { style: `background:${c}`, title: `${m.fmt(cuts[i])} to ${m.fmt(cuts[i + 1])}` }))),
     el("div", { className: "stepl" }, ...cuts.map((v, i) => el("span", { textContent: m.fmt(v), style: `left:${(100 * i) / colors.length}%` }))),
-    el("div", { textContent: `Each shade holds an equal share of zones. Grey: under ${state.minTrips} trips. Outlined: Pareto-efficient zone.`, style: "margin-top:4px" }));
+    el("div", { textContent: odMode
+      ? `% of the ${od.total.toLocaleString()} selected trips from ${zname(state.zone)} that end in each zone. Each shade holds an equal share of destinations. Grey: no trips.`
+      : `Each shade holds an equal share of zones. Grey: under ${state.minTrips} trips. Outlined: Pareto-efficient zone.`, style: "margin-top:4px" }));
 }
 
 /* ---------- Tooltip (values lead, labels follow) ---------- */
@@ -242,8 +290,12 @@ function moveTip(e) {
 const hideTip = () => ($("tip").hidden = true);
 function showTip(e, id) {
   const p = byId.get(id), r = rowOf().get(id), f = (k, v) => (v == null ? "–" : METRICS[k].fmt(v));
-  const rows = r ? [[`pickups/day`, f("pickups_per_day", r.pickups_per_day)], [`fare+tip per min`, f("rate", r.rate)],
-    [`min avg duration`, f("avg_duration", r.avg_duration)], [`% good tips (card)`, f("tip_rate", r.tip_rate)]] : [["trips", "0"]];
+  const rows = r ? [[`pickups/day`, f("pickups_per_day", r.pickups_per_day)], [`fare+tip−tolls per min`, f("rate", r.rate)],
+    [`min avg duration`, f("avg_duration", r.avg_duration)], [`% good tips, card, pickups here`, f("tip_rate", r.tip_rate)],
+    [`% good tips, card, dropoffs here`, f("do_tip_rate", r.do_tip_rate)], [`% avg card tip of fare`, f("card_tip_pct", r.card_tip_pct)],
+    [`dropoffs/day`, f("dropoffs_per_day", r.dropoffs_per_day)], [`pickups per dropoff`, f("pickups_per_dropoff", r.pickups_per_dropoff)]] : [["trips", "0"]];
+  const p_od = odProbs();
+  if (p_od) rows.unshift([`% of trips from ${zname(state.zone)} end here (OD probability)`, f("od_prob", p_od.get(id) ?? 0)]);
   if (r?.attractiveness != null) rows.push(["attractiveness", f("attractiveness", r.attractiveness)]);
   if (r?.pareto) rows.push(["", "Pareto-efficient"]);
   tipRows(p?.zone ?? `Zone ${id}`, p?.borough, rows); moveTip(e);
@@ -270,7 +322,7 @@ function renderScatter() {
     width: 620, height: 520, marginLeft: 52, marginBottom: 40, marginTop: 34,
     style: { background: "transparent", color: ink2, fontSize: "12px", fontFamily: "Archivo, system-ui, sans-serif" },
     x: { label: "Pickups per day (log scale) →", type: "log", ticks: [10, 100, 1000, 10000], tickFormat: "~s" },
-    y: { label: "↑ Fare + tip per occupied minute ($)", tickFormat: "$.2f", domain: [lo, cap], nice: true },
+    y: { label: "↑ Fare + tip − tolls per occupied minute ($)", tickFormat: "$.2f", domain: [lo, cap], nice: true },
     marks: [
       Plot.gridX({ ticks: [10, 100, 1000, 10000], stroke: css("--grid"), strokeOpacity: 1 }), Plot.gridY({ stroke: css("--grid"), strokeOpacity: 1 }),
       Plot.dot(others.filter((d) => !d.thin), { ...XY, r: 4, fill: s1, fillOpacity: 0.35 }),
@@ -322,7 +374,7 @@ function renderScatter() {
     const d = data[i]; plot.style.cursor = "pointer";
     ring.attr("display", null).attr("cx", pts[i][0]).attr("cy", pts[i][1]);
     tipRows(d.name, byId.get(d.zone)?.borough, [["pickups/day", METRICS.pickups_per_day.fmt(d.pickups_per_day)],
-      ["fare+tip per min", METRICS.rate.fmt(d.rate)], ...(d.pareto ? [["", "Pareto-efficient"]] : []),
+      ["fare+tip−tolls per min", METRICS.rate.fmt(d.rate)], ...(d.pareto ? [["", "Pareto-efficient"]] : []),
       ...(d.thin ? [["", "Few pickups: small sample"]] : [])]);
     moveTip(e);
   });
@@ -347,7 +399,7 @@ function renderDetail() {
   const host = $("detail");
   if (!state.zone) {
     host.replaceChildren(el("h2", { textContent: "Zone detail" }),
-      el("p", { className: "empty", textContent: "Select a zone on the map, the scatter plot or the ranked list to see where its trips go and to compare it with another zone." }));
+      el("p", { className: "empty", textContent: "Select a zone on the map, the scatter plot or the ranked list to see its origin–destination probabilities (where its trips end) and to compare it with another zone." }));
     return;
   }
   const kids = [el("div", { className: "dhead" },
@@ -356,7 +408,8 @@ function renderDetail() {
   if (od?.error) {
     kids.push(el("p", { className: "empty", textContent: `Destinations couldn't load (${od.error}). If the server was started before this feature was added, restart it.` }));
   } else if (od && od.total) {
-    kids.push(el("p", { className: "note", textContent: `Where the ${od.total.toLocaleString()} selected trips from here end` }));
+    kids.push(el("h3", { className: "odh", textContent: "Origin–destination probability" }),
+      el("p", { className: "note", textContent: `Share of the ${od.total.toLocaleString()} selected trips from here that end in each zone (top 10). To see every destination, colour the map by origin–destination probability.` }));
     const max = Math.max(...od.top.map((d) => d.prob));
     const rows = od.top.map((d) => el("li", {}, el("span", { className: "nm", textContent: zname(d.zone), title: zname(d.zone) }),
       el("span", { className: "bar" }, Object.assign(el("i"), { style: `width:${(100 * d.prob) / max}%` })),
@@ -373,13 +426,15 @@ function renderDetail() {
   const cmp = el("div", { className: "cmp" }, el("label", {}, "Compare with", sel));
   const A = rowOf().get(state.zone), B = state.compare ? rowOf().get(state.compare) : null;
   if (A && B) {
-    const defs = [["Pickups per day", "pickups_per_day", 1], ["Fare + tip per min", "rate", 1], ["Avg duration (min)", "avg_duration", 0], ["Card tips over 20% (%)", "tip_rate", 1]];
+    const defs = [["Pickups per day", "pickups_per_day", 1], ["Fare + tip − tolls per min", "rate", 1], ["Avg duration (min)", "avg_duration", 0],
+      ["Card tips over 20%, pickups (%)", "tip_rate", 1], ["Card tips over 20%, dropoffs (%)", "do_tip_rate", 1], ["Avg card tip (% of fare)", "card_tip_pct", 1],
+      ["Dropoffs per day", "dropoffs_per_day", 0], ["Pickups per dropoff", "pickups_per_dropoff", 1]];
     const cell = (k, v, win) => el("td", { className: win ? "win" : "", textContent: v == null ? "–" : METRICS[k].fmt(v) });
     cmp.append(el("table", {}, el("thead", {}, el("tr", {}, el("th"), el("th", { textContent: zname(state.zone) }), el("th", { textContent: zname(state.compare) }))),
       el("tbody", {}, ...defs.map(([l, k, higher]) => {
         const a = A[k], b = B[k], both = a != null && b != null && a !== b;
         return el("tr", {}, el("td", { textContent: l }), cell(k, a, higher && both && a > b), cell(k, b, higher && both && b > a));
-      }))), el("p", { className: "note", textContent: "A check mark shows the higher value. Trip duration is not marked: shorter is neither better nor worse." }));
+      }))), el("p", { className: "note", textContent: "A check mark shows the higher value. Trip duration and dropoffs are not marked: more or less is neither better nor worse." }));
   }
   kids.push(cmp);
   host.replaceChildren(...kids);
@@ -389,10 +444,11 @@ function renderTable() {
   const rows = summary.zones.filter((z) => z.attractiveness != null).sort((a, b) => b.attractiveness - a.attractiveness).slice(0, 12);
   const th = (t) => el("th", { textContent: t });
   $("table").replaceChildren(el("table", {},
-    el("thead", {}, el("tr", {}, th("Zone"), th("Attract."), th("Pickups/day"), th("$/min"), th("Min"), th("Pareto"))),
+    el("thead", {}, el("tr", {}, th("Zone"), th("Attract."), th("Pickups/day"), th("$/min"), th("Min"), th("Pick/drop"), th("Pareto"))),
     el("tbody", {}, ...rows.map((r) => el("tr", {},
       ...[zname(r.zone), METRICS.attractiveness.fmt(r.attractiveness), METRICS.pickups_per_day.fmt(r.pickups_per_day),
-        METRICS.rate.fmt(r.rate), METRICS.avg_duration.fmt(r.avg_duration), r.pareto ? "yes" : ""]
+        METRICS.rate.fmt(r.rate), METRICS.avg_duration.fmt(r.avg_duration),
+        r.pickups_per_dropoff == null ? "–" : METRICS.pickups_per_dropoff.fmt(r.pickups_per_dropoff), r.pareto ? "yes" : ""]
         .map((t) => el("td", { textContent: t })))))));
 }
 
@@ -404,14 +460,16 @@ function vegaConfig() {
       labelFontSize: 11, titleFontSize: 11, titleFontWeight: "normal" } };
 }
 const cw = () => Math.max(240, ($("vRate").clientWidth || 360) - 60);
-const HX = { field: "hour", type: "quantitative", title: "Pickup hour", scale: { domain: [-0.5, 23.5], nice: false },
-  axis: { values: [0, 3, 6, 9, 12, 15, 18, 21], grid: false } };
+/* x = time of day in hours (slot / 4); each point sits at the start of its 15-minute window */
+const HX = { field: "t", type: "quantitative", title: "Time of day", scale: { domain: [0, 24], nice: false },
+  axis: { values: [0, 3, 6, 9, 12, 15, 18, 21, 24], labelExpr: "datum.value + ':00'", labelOverlap: "greedy", labelFlush: true, grid: false } };
+const winLayer = (color) => ({ data: { values: state.s0 === 0 && state.s1 === SLOTS - 1 ? [] : [{ a: state.s0 / 4, b: (state.s1 + 1) / 4 }] },
+  mark: { type: "rect", color, opacity: 0.08 }, encoding: { x: { field: "a", type: "quantitative", scale: { domain: [0, 24] } }, x2: { field: "b" } } });
 
 function lineChart(host, values, yField, yTitle, color, fmt, extra = {}) {
-  const win = { data: { values: state.h0 === 0 && state.h1 === 23 ? [] : [{ a: state.h0 - 0.5, b: state.h1 + 0.5 }] }, mark: { type: "rect", color, opacity: 0.08 },
-    encoding: { x: { field: "a", type: "quantitative", scale: { domain: [-0.5, 23.5] } }, x2: { field: "b" } } };
+  const win = winLayer(color);
   const y = { field: yField, type: "quantitative", title: yTitle, scale: { zero: false } };
-  const hit = { name: "hov", select: { type: "point", fields: ["hour"], nearest: true, on: "pointerover", clear: "pointerout" } };
+  const hit = { name: "hov", select: { type: "point", fields: ["t"], nearest: true, on: "pointerover", clear: "pointerout" } };
   return vegaEmbed(host, {
     width: cw(), height: 220, data: { values },
     layer: [win,
@@ -419,7 +477,7 @@ function lineChart(host, values, yField, yTitle, color, fmt, extra = {}) {
       { mark: { type: "point", size: 300, opacity: 0 }, params: [hit], encoding: { x: HX, y } },
       { mark: { type: "rule", color: css("--axis") }, encoding: { x: HX,
         opacity: { condition: { param: "hov", empty: false, value: 1 }, value: 0 },
-        tooltip: [{ field: "hour", title: "Hour" }, { field: yField, title: yTitle, format: fmt }] } },
+        tooltip: [{ field: "time", title: "From" }, { field: yField, title: yTitle, format: fmt }] } },
       { mark: { type: "point", filled: true, size: 70, color, stroke: css("--surface"), strokeWidth: 2 },
         encoding: { x: HX, y, opacity: { condition: { param: "hov", empty: false, value: 1 }, value: 0 } } }],
     ...extra,
@@ -428,9 +486,29 @@ function lineChart(host, values, yField, yTitle, color, fmt, extra = {}) {
 
 function renderVega() {
   const s1 = css("--s1"), s2 = css("--s2");
-  const H = series.by_hour;
+  const H = series.by_slot.map((d) => ({ ...d, t: d.slot / 4, time: slotLabel(d.slot / 4) }));
   lineChart("#vRate", H, "rate", "$ per occupied minute", s1, "$.2f");
   lineChart("#vDur", H, "avg_duration", "Minutes", s1, ".1f");
+
+  // Pickups and dropoffs share one unit (trips per day), so one axis, two categorical slots.
+  const NP = "Pickups", ND = "Dropoffs";
+  const pd = H.flatMap((d) => [{ t: d.t, time: d.time, series: NP, v: d.pickups_per_day }, { t: d.t, time: d.time, series: ND, v: d.dropoffs_per_day }]);
+  $("flowKey").replaceChildren(el("span", { className: "key" }, el("i", { style: `background:${s1}` }), NP),
+    el("span", { className: "key" }, el("i", { style: `background:${s2}` }), ND),
+    el("div", { textContent: "Trips per selected day starting or ending in each 15-minute window." }));
+  const pcol = { field: "series", type: "nominal", legend: null, scale: { domain: [NP, ND], range: [s1, s2] } };
+  const py = { field: "v", type: "quantitative", title: "Trips per day" };
+  const phit = { name: "hovF", select: { type: "point", fields: ["t"], nearest: true, on: "pointerover", clear: "pointerout" } };
+  vegaEmbed("#vFlow", {
+    width: cw(), height: 220, data: { values: pd },
+    layer: [winLayer(s1),
+      { mark: { type: "line", strokeWidth: 2 }, encoding: { x: HX, y: py, color: pcol } },
+      { mark: { type: "point", size: 300, opacity: 0 }, params: [phit], encoding: { x: HX, y: py, color: pcol } },
+      { mark: { type: "rule", color: css("--axis") }, encoding: { x: HX, opacity: { condition: { param: "hovF", empty: false, value: 1 }, value: 0 } } },
+      { mark: { type: "point", filled: true, size: 70, stroke: css("--surface"), strokeWidth: 2 },
+        encoding: { x: HX, y: py, color: pcol, opacity: { condition: { param: "hovF", empty: false, value: 1 }, value: 0 },
+          tooltip: [{ field: "series", title: "Series" }, { field: "time", title: "From" }, { field: "v", title: "Per day", format: ",.1f" }] } }],
+  }, { actions: false, config: vegaConfig(), renderer: "svg", tooltip: { theme: isDark() ? "dark" : "light" } });
 
   vegaEmbed("#vWeekday", {
     width: cw(), height: 220,
@@ -444,21 +522,33 @@ function renderVega() {
   }, { actions: false, config: vegaConfig(), renderer: "svg" });
 
   // Indexed to each series' own daily mean (=100) so both share ONE axis; no dual axis.
-  const T = new Map(series.traffic_by_hour.map((d) => [d.hour, d.speed]));
-  const mean = (a) => d3.mean(a.filter((v) => v != null));
-  const mr = mean(H.map((d) => d.rate)), ms = mean([...T.values()]);
-  const NR = "Fare + tip per min", NS = "Traffic speed";
+  // Both series are per 15-minute window. When the selection holds traffic days, the rate line is recomputed
+  // over exactly those days (traffic.rate_by_slot), so both lines describe the same days (see trafficNote).
+  const tr = series.traffic, T = tr.by_slot.filter((d) => d.speed != null);
+  const R = (tr.matched ? tr.rate_by_slot : series.by_slot).filter((d) => d.rate != null);
+  const mean = (a) => d3.mean(a);
+  const mr = mean(R.map((d) => d.rate)), ms = mean(T.map((d) => d.speed));
+  const NR = "Fare + tip − tolls per min", NS = tr.borough ? `Traffic speed (${tr.borough})` : "Traffic speed";
   const idx = [];
-  H.forEach((d) => {
-    if (d.rate != null) idx.push({ hour: d.hour, series: NR, index: (100 * d.rate) / mr });
-    if (T.get(d.hour) != null) idx.push({ hour: d.hour, series: NS, index: (100 * T.get(d.hour)) / ms });
-  });
+  R.forEach((d) => idx.push({ t: d.slot / 4, time: slotLabel(d.slot / 4), series: NR, index: (100 * d.rate) / mr,
+    value: `$${d.rate.toFixed(2)} per min` }));
+  T.forEach((d) => idx.push({ t: d.slot / 4, time: slotLabel(d.slot / 4), series: NS, index: (100 * d.speed) / ms,
+    value: `${d.speed.toFixed(1)} mph` }));
+  const plural = (n) => `${n} day${n === 1 ? "" : "s"}`;
+  const span = tr.n_days ? `${plural(tr.n_days)}, ${tr.first} to ${tr.last}` : "no days";
+  const links = tr.borough ? `${tr.borough} road links only` : "road links in all boroughs";
+  $("trafficNote").textContent = tr.matched
+    ? `Both lines cover the same ${span}: the selected days that also have NYC DOT speed data`
+      + (tr.n_days < tr.n_taxi_days ? ` (${tr.n_days} of ${tr.n_taxi_days} selected days; traffic data starts 2026-08-01)` : "")
+      + `. Traffic speed is the mean over ${links}.`
+    : `None of the selected days has traffic data (it starts 2026-08-01), so the traffic line uses all ${span} of traffic`
+      + ` on the selected weekdays, ${links}. The earning rate covers the selected days. This compares daily shapes, not the same days.`;
   $("idxKey").replaceChildren(el("span", { className: "key" }, el("i", { style: `background:${s1}` }), NR),
     el("span", { className: "key" }, el("i", { style: `background:${s2}` }), NS),
     el("div", { textContent: "Each series = 100 at its own daily average." }));
   const col = { field: "series", type: "nominal", legend: null, scale: { domain: [NR, NS], range: [s1, s2] } };
   const y = { field: "index", type: "quantitative", title: "Index (daily avg = 100)", scale: { zero: false } };
-  const hit = { name: "hovT", select: { type: "point", fields: ["hour"], nearest: true, on: "pointerover", clear: "pointerout" } };
+  const hit = { name: "hovT", select: { type: "point", fields: ["t"], nearest: true, on: "pointerover", clear: "pointerout" } };
   vegaEmbed("#vTraffic", {
     width: cw(), height: 220, data: { values: idx },
     layer: [
@@ -468,7 +558,8 @@ function renderVega() {
         opacity: { condition: { param: "hovT", empty: false, value: 1 }, value: 0 } } },
       { mark: { type: "point", filled: true, size: 70, stroke: css("--surface"), strokeWidth: 2 },
         encoding: { x: HX, y, color: col, opacity: { condition: { param: "hovT", empty: false, value: 1 }, value: 0 },
-          tooltip: [{ field: "series", title: "Series" }, { field: "hour", title: "Hour" }, { field: "index", title: "Index", format: ".0f" }] } },
+          tooltip: [{ field: "series", title: "Series" }, { field: "time", title: "From" }, { field: "index", title: "Index", format: ".0f" },
+            { field: "value", title: "Value" }] } },
     ],
   }, { actions: false, config: vegaConfig(), renderer: "svg", tooltip: { theme: isDark() ? "dark" : "light" } });
 }
